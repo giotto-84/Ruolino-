@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import Group, Permission
 
-from .models import Contatore, Grado, TipoImpiego, TipoScadenza
+from .models import Contatore, Grado, OrarioLavoro, TipoImpiego, TipoScadenza
 
 GRADI = [
     ("COL.", "Colonnello"), ("TEN. COL.", "Tenente Colonnello"), ("MAGG.", "Maggiore"),
@@ -55,8 +55,8 @@ CODICI = [
     ("GUARDIA B (4)", "Guardia B - quarto uomo", S, GIALLO, "#000000", True, None),
     ("Udp", "Ufficiale/Sottufficiale di picchetto", S, GIALLO, "#000000", True, None),
     ("Gdg", "Graduato di giornata", S, GIALLO, "#000000", True, None),
-    ("RC", "Recupero compensativo", X, GIALLO, "#000000", False, None),
-    ("RC FEST", "Recupero festivo", X, MARRONE, "#FFFFFF", False, None),
+    ("RC", "Recupero compensativo", X, GIALLO, "#000000", False, "Ore di recupero"),
+    ("RC FEST", "Recupero festivo", X, MARRONE, "#FFFFFF", False, "Ore di recupero"),
     ("LIC ORD", "Licenza ordinaria", X, MARRONE, "#FFFFFF", False, "Licenza ordinaria"),
     ("LIC FEST", "Licenza festivita' soppresse", X, MARRONE, "#FFFFFF", False, "Festivita' soppresse"),
     ("LIC CONC.", "Licenza per concorso", X, AZZURRO, "#000000", False, None),
@@ -102,10 +102,11 @@ TIPI_SCADENZA = [
 RUOLI = {
     # Vede tutto, modifica ruolino, anagrafica, licenze e scadenze, configurazione
     "Amministratori": None,  # tutti i permessi dell'app
-    # Aggiorna il ruolino, le licenze e le scadenze
+    # Aggiorna ruolino, anagrafica (senza eliminare), licenze e scadenze
     "Operatori": [
-        "view_militare", "view_grado", "view_tipoimpiego", "view_contatore",
+        "view_grado", "view_tipoimpiego", "view_contatore", "view_orariolavoro",
         "view_tiposcadenza", "view_registromodifiche",
+        "add_militare", "change_militare", "view_militare",
         "add_impiego", "change_impiego", "delete_impiego", "view_impiego",
         "add_scadenza", "change_scadenza", "delete_scadenza", "view_scadenza",
         "add_spettanza", "change_spettanza", "delete_spettanza", "view_spettanza",
@@ -113,7 +114,7 @@ RUOLI = {
     ],
     # Sola lettura
     "Consultazione": [
-        "view_militare", "view_grado", "view_tipoimpiego", "view_contatore",
+        "view_militare", "view_grado", "view_tipoimpiego", "view_contatore", "view_orariolavoro",
         "view_tiposcadenza", "view_impiego", "view_scadenza", "view_spettanza",
         "view_detrazione",
     ],
@@ -141,6 +142,7 @@ def carica_dati_iniziali():
                 "presente_in_sede": presente,
                 "contatore": contatori.get(cont) if cont else None,
                 "quantita_per_giorno": Decimal("1"),
+                "scala_secondo_orario": cont is not None and contatori[cont].unita == Contatore.Unita.ORE,
                 "ordine": (i + 1) * 10,
             },
         )
@@ -161,4 +163,6 @@ def carica_dati_iniziali():
         permessi = Permission.objects.filter(content_type__app_label="personale")
         if codici is not None:
             permessi = permessi.filter(codename__in=codici)
-        gruppo.permissions.set(permessi)
+        gruppo.permissions.add(*permessi)  # non toglie i permessi aggiunti a mano
+
+    OrarioLavoro.corrente()

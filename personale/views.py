@@ -23,6 +23,7 @@ from .forms import (
     GradoForm,
     ImportaExcelForm,
     MilitareForm,
+    OrarioLavoroForm,
     PeriodoForm,
     ScadenzaForm,
     SpettanzaForm,
@@ -35,6 +36,7 @@ from .models import (
     Grado,
     Impiego,
     Militare,
+    OrarioLavoro,
     RegistroModifiche,
     Scadenza,
     Spettanza,
@@ -589,8 +591,9 @@ def licenze(request):
         for s in Spettanza.objects.filter(anno=anno)
     }
     goduto = defaultdict(Decimal)
+    orario = OrarioLavoro.corrente()
     for imp in Impiego.objects.filter(data__year=anno, tipo__contatore__isnull=False).select_related("tipo"):
-        goduto[(imp.militare_id, imp.tipo.contatore_id)] += imp.quantita_effettiva
+        goduto[(imp.militare_id, imp.tipo.contatore_id)] += imp.quantita_scalata(orario)
     for d in Detrazione.objects.filter(anno=anno):
         goduto[(d.militare_id, d.contatore_id)] += d.quantita
     righe = []
@@ -744,7 +747,11 @@ CONFIG = {
     "scadenze": (TipoScadenza, TipoScadenzaForm, "Tipi di scadenza"),
     "contatori": (Contatore, ContatoreForm, "Contatori licenze / recuperi"),
     "gradi": (Grado, GradoForm, "Gradi"),
+    "orario": (OrarioLavoro, OrarioLavoroForm, "Orario di lavoro"),
 }
+
+# sezioni con un solo record: niente "Aggiungi" ne' "Elimina"
+CONFIG_UNICO = {"orario"}
 
 
 def _config(sezione):
@@ -758,6 +765,8 @@ def configurazione(request, sezione="codici"):
     modello, _, titolo = _config(sezione)
     if not request.user.has_perm(f"personale.view_{modello._meta.model_name}"):
         raise Http404
+    if sezione in CONFIG_UNICO:
+        OrarioLavoro.corrente()
     return render(
         request,
         "personale/configurazione.html",
@@ -767,6 +776,8 @@ def configurazione(request, sezione="codici"):
             "oggetti": modello.objects.all(),
             "sezioni": [(k, v[2]) for k, v in CONFIG.items()],
             "puo_modificare": request.user.has_perm(f"personale.change_{modello._meta.model_name}"),
+            "puo_aggiungere": sezione not in CONFIG_UNICO
+            and request.user.has_perm(f"personale.add_{modello._meta.model_name}"),
         },
     )
 
@@ -775,6 +786,8 @@ def configurazione(request, sezione="codici"):
 def configurazione_modifica(request, sezione, pk=None):
     modello, form_class, titolo = _config(sezione)
     nome = modello._meta.model_name
+    if sezione in CONFIG_UNICO and pk is None:
+        raise Http404
     oggetto = get_object_or_404(modello, pk=pk) if pk else None
     permesso = f"personale.{'change' if oggetto else 'add'}_{nome}"
     if not request.user.has_perm(permesso):
@@ -782,7 +795,7 @@ def configurazione_modifica(request, sezione, pk=None):
         return redirect("configurazione", sezione=sezione)
     form = form_class(request.POST or None, instance=oggetto)
     if request.method == "POST":
-        if "elimina" in request.POST and oggetto:
+        if "elimina" in request.POST and oggetto and sezione not in CONFIG_UNICO:
             if not request.user.has_perm(f"personale.delete_{nome}"):
                 messages.error(request, "Non hai i permessi per eliminare.")
             else:
@@ -807,7 +820,9 @@ def configurazione_modifica(request, sezione, pk=None):
         {
             "form": form,
             "titolo": f"{titolo} - {'modifica' if oggetto else 'nuovo'}",
-            "elimina_inline": oggetto is not None and request.user.has_perm(f"personale.delete_{nome}"),
+            "elimina_inline": oggetto is not None
+            and sezione not in CONFIG_UNICO
+            and request.user.has_perm(f"personale.delete_{nome}"),
             "annulla": reverse("configurazione", args=[sezione]),
         },
     )

@@ -7,6 +7,7 @@ from .models import (
     Detrazione,
     Grado,
     Militare,
+    OrarioLavoro,
     Scadenza,
     Spettanza,
     TipoImpiego,
@@ -50,9 +51,16 @@ class TipoImpiegoForm(forms.ModelForm):
         model = TipoImpiego
         fields = [
             "codice", "descrizione", "categoria", "colore_sfondo", "colore_testo",
-            "presente_in_sede", "contatore", "quantita_per_giorno", "ordine", "attivo",
+            "presente_in_sede", "contatore", "quantita_per_giorno", "scala_secondo_orario",
+            "ordine", "attivo",
         ]
         widgets = {"colore_sfondo": ColoreInput(), "colore_testo": ColoreInput()}
+
+
+class OrarioLavoroForm(forms.ModelForm):
+    class Meta:
+        model = OrarioLavoro
+        fields = ["ore_lun", "ore_mar", "ore_mer", "ore_gio", "ore_ven", "ore_sab", "ore_dom", "festivi_zero"]
 
 
 class ContatoreForm(forms.ModelForm):

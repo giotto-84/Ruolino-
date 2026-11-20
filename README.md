@@ -14,9 +14,9 @@ tramite browser (Chrome, Edge, Firefox). **Non è pubblicato su Internet.**
 | **Inserimento rapido** | Nel ruolino si sceglie un codice e si clicca (o si trascina) sulle caselle. Senza codice scelto, il clic apre il dettaglio della casella (più codici, località, note). |
 | **Inserisci periodo** | Stesso codice a uno o più militari per un intervallo di date (es. licenza dal 10 al 20), con opzione "escludi festivi". |
 | **Militari** | Anagrafica: grado, incarico, patenti, telefono, stato (effettivo / extra / perso dalla forza), date di ingresso e uscita. |
-| **Licenze** | Per ogni militare e anno si inserisce a mano la spettanza (licenza ordinaria, festività soppresse, ore di recupero...). Il goduto viene calcolato dal ruolino, il residuo in automatico. Sono possibili movimenti manuali (es. ore di recupero maturate). |
+| **Licenze** | Per ogni militare e anno si inserisce a mano la spettanza (licenza ordinaria, festività soppresse, ore di recupero...). Il goduto viene calcolato dal ruolino, il residuo in automatico. **RC e RC FEST** scalano dalle *Ore di recupero* secondo l'orario di lavoro: lun-gio 8 ore, ven 4 ore, sabato, domenica e festivi 0 (modificabile in Configurazione → Orario di lavoro; per un singolo giorno si possono indicare le ore a mano nella casella). Sono possibili movimenti manuali (es. ore di recupero maturate). |
 | **Scadenze** | Tabella militari × tipi di scadenza con colori: scaduta / in scadenza / valida / mancante. I tipi di scadenza si aggiungono liberamente (Configurazione → Tipi di scadenza), con validità in mesi e giorni di preavviso. |
-| **Configurazione** | Codici di impiego con **colore di sfondo e testo scelti da voi**, categoria (servizio, fuori sede, assenza...), se il militare conta come presente in sede, e da quale contatore scala (es. LIC ORD → licenza ordinaria). Gradi, contatori e tipi di scadenza. |
+| **Configurazione** | Orario di lavoro settimanale. Codici di impiego con **colore di sfondo e testo scelti da voi**, categoria (servizio, fuori sede, assenza...), se il militare conta come presente in sede, e da quale contatore scala (es. LIC ORD → licenza ordinaria). Gradi, contatori e tipi di scadenza. |
 | **Importa Excel** | Carica il brogliaccio Excel esistente (anagrafica e tutti i codici giornalieri). |
 | **Registro** | Chi ha modificato cosa e quando. |
 
@@ -24,7 +24,7 @@ tramite browser (Chrome, Edge, Firefox). **Non è pubblicato su Internet.**
 Gli utenti si creano dal menu **Utenti** (solo amministratori). A ogni utente si assegna un gruppo:
 
 * **Amministratori**: possono fare tutto, compresi anagrafica, configurazione e importazione.
-* **Operatori**: aggiornano ruolino, licenze e scadenze. Non modificano anagrafica e configurazione.
+* **Operatori**: aggiornano ruolino, anagrafica (inserimento e modifica, non eliminazione), licenze e scadenze. Non modificano la configurazione.
 * **Consultazione**: possono solo leggere.
 
 ## Installazione (una volta sola)

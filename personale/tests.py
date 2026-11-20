@@ -177,3 +177,36 @@ class VisteTest(Base):
         # 10-14 agosto lun-ven = 5 giorni lavorativi (15 festivo, 16 domenica)
         self.assertEqual(Impiego.objects.filter(militare=self.m1).count(), 5)
         self.assertEqual(Impiego.objects.count(), 10)
+
+
+class OrarioTest(Base):
+    def test_ore_recupero_secondo_orario(self):
+        from .models import OrarioLavoro
+
+        ore = Contatore.objects.get(nome="Ore di recupero")
+        rc = self.tipo("RC")
+        self.assertEqual(rc.contatore, ore)
+        self.assertTrue(rc.scala_secondo_orario)
+        Spettanza.objects.create(militare=self.m1, contatore=ore, anno=2026, quantita=Decimal("100"))
+        # lun 10/8 (8) + ven 14/8 (4) + sab 15/8 festivo (0) + dom 16/8 (0)
+        for g in (10, 14, 15, 16):
+            Impiego.objects.create(militare=self.m1, data=date(2026, 8, g), tipo=rc)
+        # RC FEST su giovedi' 13/8 con ore indicate a mano
+        Impiego.objects.create(militare=self.m1, data=date(2026, 8, 13), tipo=self.tipo("RC FEST"), quantita=Decimal("3"))
+        self.assertEqual(situazione_contatore(self.m1, ore, 2026), (Decimal("100"), Decimal("15"), Decimal("85")))
+        orario = OrarioLavoro.corrente()
+        orario.ore_ven = Decimal("6")
+        orario.save()
+        self.assertEqual(situazione_contatore(self.m1, ore, 2026)[1], Decimal("17"))
+
+    def test_operatore_anagrafica(self):
+        self.client.force_login(self.op)
+        self.assertEqual(self.client.get(f"/militari/{self.m1.pk}/modifica/").status_code, 200)
+        self.assertEqual(self.client.get("/militari/nuovo/").status_code, 200)
+        self.assertEqual(self.client.get(f"/militari/{self.m1.pk}/elimina/").status_code, 403)
+
+    def test_pagina_orario(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get("/configurazione/orario/").status_code, 200)
+        self.assertEqual(self.client.get("/configurazione/orario/1/").status_code, 200)
+        self.assertEqual(self.client.get("/configurazione/orario/nuovo/").status_code, 404)

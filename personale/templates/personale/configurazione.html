@@ -1,10 +1,11 @@
 {% extends "personale/base.html" %}
+{% load ruolino_extra %}
 {% block titolo %}{{ titolo }}{% endblock %}
 {% block contenuto %}
 <div class="schede">{% for k, nome in sezioni %}<a class="{% if k == sezione %}attiva{% endif %}" href="{% url 'configurazione' k %}">{{ nome }}</a>{% endfor %}</div>
 <div class="intestazione">
   <h1>{{ titolo }}</h1>
-  {% if puo_modificare %}<a class="bottone primario" href="{% url 'configurazione_nuovo' sezione %}">+ Aggiungi</a>{% endif %}
+  {% if puo_aggiungere %}<a class="bottone primario" href="{% url 'configurazione_nuovo' sezione %}">+ Aggiungi</a>{% endif %}
 </div>
 <table class="tabella">
 {% if sezione == "codici" %}
@@ -12,7 +13,7 @@
   {% for o in oggetti %}<tr class="{% if not o.attivo %}spento{% endif %}">
     <td><a href="{% url 'configurazione_modifica' sezione o.pk %}"><span class="etichetta" style="background:{{ o.colore_sfondo }};color:{{ o.colore_testo }}">{{ o.codice }}</span></a></td>
     <td>{{ o.descrizione }}</td><td>{{ o.get_categoria_display }}</td><td>{{ o.presente_in_sede|yesno:"si',no" }}</td>
-    <td>{% if o.contatore %}{{ o.contatore.nome }} ({{ o.quantita_per_giorno }}/giorno){% endif %}</td><td>{{ o.attivo|yesno:"si',no" }}</td></tr>{% endfor %}
+    <td>{% if o.contatore %}{{ o.contatore.nome }} ({% if o.scala_secondo_orario %}secondo orario{% else %}{{ o.quantita_per_giorno }}/giorno{% endif %}){% endif %}</td><td>{{ o.attivo|yesno:"si',no" }}</td></tr>{% endfor %}
 {% elif sezione == "scadenze" %}
   <tr><th>Nome</th><th>Validita'</th><th>Preavviso</th><th>Obbligatoria</th><th>Descrizione</th></tr>
   {% for o in oggetti %}<tr><td><a href="{% url 'configurazione_modifica' sezione o.pk %}">{{ o.nome }}</a></td>
@@ -20,6 +21,10 @@
 {% elif sezione == "contatori" %}
   <tr><th>Nome</th><th>Unita'</th><th>Attivo</th></tr>
   {% for o in oggetti %}<tr><td><a href="{% url 'configurazione_modifica' sezione o.pk %}">{{ o.nome }}</a></td><td>{{ o.get_unita_display }}</td><td>{{ o.attivo|yesno:"si',no" }}</td></tr>{% endfor %}
+{% elif sezione == "orario" %}
+  <tr><th>Lun</th><th>Mar</th><th>Mer</th><th>Gio</th><th>Ven</th><th>Sab</th><th>Dom</th><th>Festivi</th><th></th></tr>
+  {% for o in oggetti %}<tr>{% for ore in o.ore_settimana %}<td>{{ ore|numero }} h</td>{% endfor %}<td>{{ o.festivi_zero|yesno:"0 h,come il giorno della settimana" }}</td>
+    <td>{% if puo_modificare %}<a href="{% url 'configurazione_modifica' sezione o.pk %}">modifica</a>{% endif %}</td></tr>{% endfor %}
 {% else %}
   <tr><th>Sigla</th><th>Descrizione</th><th>Ordine</th></tr>
   {% for o in oggetti %}<tr><td><a href="{% url 'configurazione_modifica' sezione o.pk %}">{{ o.sigla }}</a></td><td>{{ o.descrizione }}</td><td>{{ o.ordine }}</td></tr>{% endfor %}

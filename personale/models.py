@@ -152,6 +152,51 @@ class Detrazione(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Orario di lavoro (per scalare le ore di recupero)
+# ---------------------------------------------------------------------------
+class OrarioLavoro(models.Model):
+    """Ore lavorative per giorno della settimana (un solo record)."""
+
+    ore_lun = models.DecimalField("lunedi'", max_digits=4, decimal_places=2, default=Decimal("8"))
+    ore_mar = models.DecimalField("martedi'", max_digits=4, decimal_places=2, default=Decimal("8"))
+    ore_mer = models.DecimalField("mercoledi'", max_digits=4, decimal_places=2, default=Decimal("8"))
+    ore_gio = models.DecimalField("giovedi'", max_digits=4, decimal_places=2, default=Decimal("8"))
+    ore_ven = models.DecimalField("venerdi'", max_digits=4, decimal_places=2, default=Decimal("4"))
+    ore_sab = models.DecimalField("sabato", max_digits=4, decimal_places=2, default=Decimal("0"))
+    ore_dom = models.DecimalField("domenica", max_digits=4, decimal_places=2, default=Decimal("0"))
+    festivi_zero = models.BooleanField(
+        "nei giorni festivi non scala ore",
+        default=True,
+        help_text="Festivita' nazionali (Natale, 25 aprile, 2 giugno, Pasquetta...).",
+    )
+
+    class Meta:
+        verbose_name = "orario di lavoro"
+        verbose_name_plural = "orario di lavoro"
+
+    def __str__(self):
+        return "Orario di lavoro: " + ", ".join(
+            f"{nome} {valore.normalize():f}"
+            for nome, valore in zip(("lun", "mar", "mer", "gio", "ven", "sab", "dom"), self.ore_settimana)
+        )
+
+    @property
+    def ore_settimana(self):
+        return [self.ore_lun, self.ore_mar, self.ore_mer, self.ore_gio, self.ore_ven, self.ore_sab, self.ore_dom]
+
+    @classmethod
+    def corrente(cls):
+        return cls.objects.get_or_create(pk=1)[0]
+
+    def ore_del_giorno(self, giorno):
+        from .calendario import festivita
+
+        if self.festivi_zero and giorno in festivita(giorno.year):
+            return Decimal("0")
+        return self.ore_settimana[giorno.weekday()]
+
+
+# ---------------------------------------------------------------------------
 # Codici di impiego giornaliero (LIC ORD, RC, GUARDIA A, S.S. ...)
 # ---------------------------------------------------------------------------
 class TipoImpiego(models.Model):
@@ -188,6 +233,12 @@ class TipoImpiego(models.Model):
         decimal_places=2,
         default=Decimal("1"),
         help_text="Giorni (o ore) scalati dal contatore per ogni giornata con questo codice.",
+    )
+    scala_secondo_orario = models.BooleanField(
+        "scala le ore secondo l'orario di lavoro",
+        default=False,
+        help_text="Se attivo, per ogni giorno scala le ore dell'orario di lavoro "
+        "(es. lun-gio 8, ven 4, sab-dom e festivi 0) invece della quantita' fissa.",
     )
     ordine = models.PositiveIntegerField("ordine nell'elenco", default=100)
     attivo = models.BooleanField("attivo", default=True)
@@ -243,9 +294,13 @@ class Impiego(models.Model):
             return f"{self.tipo.codice} {self.localita}"
         return self.tipo.codice
 
-    @property
-    def quantita_effettiva(self):
-        return self.quantita if self.quantita is not None else self.tipo.quantita_per_giorno
+    def quantita_scalata(self, orario=None):
+        """Quantita' scalata dal contatore per questa giornata."""
+        if self.quantita is not None:
+            return self.quantita
+        if self.tipo.scala_secondo_orario:
+            return (orario or OrarioLavoro.corrente()).ore_del_giorno(self.data)
+        return self.tipo.quantita_per_giorno
 
 
 def situazione_contatore(militare, contatore, anno):
@@ -259,8 +314,9 @@ def situazione_contatore(militare, contatore, anno):
     impieghi = Impiego.objects.filter(
         militare=militare, tipo__contatore=contatore, data__year=anno
     ).select_related("tipo")
+    orario = OrarioLavoro.corrente()
     for imp in impieghi:
-        goduto += imp.quantita_effettiva
+        goduto += imp.quantita_scalata(orario)
     goduto += (
         Detrazione.objects.filter(militare=militare, contatore=contatore, anno=anno).aggregate(
             s=Sum("quantita")

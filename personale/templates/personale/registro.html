@@ -1,0 +1,10 @@
+{% extends "personale/base.html" %}
+{% block titolo %}Registro modifiche{% endblock %}
+{% block contenuto %}
+<h1>Registro modifiche</h1>
+<p class="aiuto">Ultime 500 operazioni: chi ha modificato cosa e quando.</p>
+<table class="tabella">
+  <tr><th>Quando</th><th>Utente</th><th>Operazione</th></tr>
+  {% for v in voci %}<tr><td>{{ v.quando|date:"d/m/Y H:i" }}</td><td>{{ v.utente|default:"-" }}</td><td>{{ v.azione }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

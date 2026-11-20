@@ -1,0 +1,36 @@
+{% load static %}<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block titolo %}Ruolino{% endblock %} - Ruolino</title>
+<link rel="stylesheet" href="{% static 'personale/style.css' %}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% if user.is_authenticated %}
+<header class="barra">
+  <a class="logo" href="{% url 'home' %}">RUOLINO</a>
+  <nav>
+    <a href="{% url 'home' %}">Situazione</a>
+    {% if perms.personale.view_impiego %}<a href="{% url 'ruolino' %}">Ruolino</a>{% endif %}
+    {% if perms.personale.view_militare %}<a href="{% url 'militari' %}">Militari</a>{% endif %}
+    {% if perms.personale.view_spettanza %}<a href="{% url 'licenze' %}">Licenze</a>{% endif %}
+    {% if perms.personale.view_scadenza %}<a href="{% url 'scadenze' %}">Scadenze</a>{% endif %}
+    {% if perms.personale.view_tipoimpiego %}<a href="{% url 'configurazione_home' %}">Configurazione</a>{% endif %}
+    {% if perms.personale.add_militare %}<a href="{% url 'importa' %}">Importa Excel</a>{% endif %}
+    {% if perms.personale.view_registromodifiche %}<a href="{% url 'registro' %}">Registro</a>{% endif %}
+    {% if user.is_staff %}<a href="{% url 'admin:auth_user_changelist' %}">Utenti</a>{% endif %}
+  </nav>
+  <div class="utente">
+    <a href="{% url 'password_change' %}" title="Cambia password">{{ user.get_full_name|default:user.username }}</a>
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="link">Esci</button></form>
+  </div>
+</header>
+{% endif %}
+<main>
+  {% for m in messages %}<div class="msg {{ m.tags }}">{{ m }}</div>{% endfor %}
+  {% block contenuto %}{% endblock %}
+</main>
+{% block script %}{% endblock %}
+</body>
+</html>

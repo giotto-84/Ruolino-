@@ -1,0 +1,28 @@
+# ---------------------------------------------------------------
+# DATI SENSIBILI: non devono MAI finire nel repository
+# ---------------------------------------------------------------
+dati/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+secret_key.txt
+backup/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Ambiente e pacchetti per installazione offline
+pacchetti/
+.venv/

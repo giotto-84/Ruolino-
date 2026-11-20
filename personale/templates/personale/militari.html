@@ -1,0 +1,24 @@
+{% extends "personale/base.html" %}
+{% block titolo %}Militari{% endblock %}
+{% block contenuto %}
+<div class="intestazione">
+  <h1>Militari</h1>
+  <form method="get" class="naviga">
+    <input name="q" value="{{ q }}" placeholder="cerca cognome, nome, incarico">
+    <label class="check"><input type="checkbox" name="persi" value="1"{% if mostra_persi %} checked{% endif %} onchange="this.form.submit()"> mostra persi dalla forza</label>
+    <button class="bottone">Cerca</button>
+    {% if perms.personale.add_militare %}<a class="bottone primario" href="{% url 'militare_nuovo' %}">+ Nuovo militare</a>{% endif %}
+  </form>
+</div>
+<table class="tabella">
+  <tr><th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>
+  {% for m in militari %}
+  <tr class="{% if m.stato == 'PER' %}spento{% endif %}">
+    <td>{{ m.grado }}</td><td><a href="{% url 'militare' m.pk %}"><strong>{{ m.cognome }}</strong></a></td><td>{{ m.nome }}</td>
+    <td>{{ m.incarico }}</td><td>{{ m.patenti }}</td><td>{{ m.telefono }}</td><td>{{ m.get_stato_display }}</td>
+    <td>{% if perms.personale.change_militare %}<a href="{% url 'militare_modifica' m.pk %}">modifica</a>{% endif %}</td>
+  </tr>
+  {% empty %}<tr><td colspan="8" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

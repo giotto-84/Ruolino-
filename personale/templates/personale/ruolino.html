@@ -1,0 +1,96 @@
+{% extends "personale/base.html" %}
+{% block titolo %}Ruolino {{ nome_mese }} {{ anno }}{% endblock %}
+{% block body_class %}largo{% endblock %}
+{% block contenuto %}
+<div class="intestazione">
+  <h1>Ruolino {{ nome_mese }} {{ anno }}</h1>
+  <div class="naviga">
+    <a class="bottone" href="{% url 'ruolino_mese' precedente.0 precedente.1 %}?stato={{ filtro }}">&larr;</a>
+    <a class="bottone" href="{% url 'ruolino' %}?stato={{ filtro }}">Mese corrente</a>
+    <a class="bottone" href="{% url 'ruolino_mese' successivo.0 successivo.1 %}?stato={{ filtro }}">&rarr;</a>
+    <form method="get" class="inline">
+      <select name="stato" onchange="this.form.submit()">
+        <option value="tutti"{% if filtro == "tutti" %} selected{% endif %}>Tutti</option>
+        <option value="EFF"{% if filtro == "EFF" %} selected{% endif %}>Solo effettivi</option>
+        <option value="EXT"{% if filtro == "EXT" %} selected{% endif %}>Solo extra</option>
+      </select>
+    </form>
+    <a class="bottone" href="{% url 'esporta_ruolino' anno mese %}">Esporta Excel</a>
+    <button class="bottone" onclick="window.print()">Stampa</button>
+    {% if puo_modificare %}<a class="bottone primario" href="{% url 'inserimento_periodo' %}">Inserisci periodo</a>{% endif %}
+  </div>
+</div>
+
+{% if puo_modificare %}
+<div class="pennello" id="pennello">
+  <strong>Inserimento rapido:</strong>
+  <select id="pn-tipo"><option value="">— clic su cella apre il dettaglio —</option>
+    {% for t in tipi %}<option value="{{ t.pk }}" data-sfondo="{{ t.colore_sfondo }}" data-testo="{{ t.colore_testo }}">{{ t.codice }}{% if t.descrizione %} - {{ t.descrizione }}{% endif %}</option>{% endfor %}
+    <option value="cancella">✖ CANCELLA casella</option>
+  </select>
+  <input id="pn-loc" placeholder="localita' (facoltativa)" size="14">
+  <label class="check"><input type="checkbox" id="pn-sost" checked> sostituisci codici esistenti</label>
+  <span class="aiuto">Scegli un codice e clicca sulle caselle (anche trascinando) per assegnarlo.</span>
+</div>
+{% endif %}
+
+<div class="contenitore-griglia">
+<table class="griglia{% if puo_modificare %} modificabile{% endif %}" id="griglia">
+  <thead>
+    <tr>
+      <th class="fisso c1">N.</th><th class="fisso c2">Grado</th><th class="fisso c3">Cognome e nome</th>
+      {% for g in giorni %}<th class="{% if g.festivo %}festivo{% endif %}{% if g.data == oggi %} oggi{% endif %}">{{ g.sett }}<br>{{ g.giorno }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in righe %}
+    <tr>
+      <td class="fisso c1">{% if r.militare.stato == "EFF" %}{{ forloop.counter }}{% else %}<small>EXTRA</small>{% endif %}</td>
+      <td class="fisso c2">{{ r.militare.grado }}</td>
+      <td class="fisso c3"><a href="{% url 'militare' r.militare.pk %}" title="{{ r.militare.incarico }}">{{ r.militare.cognome }} {{ r.militare.nome }}</a></td>
+      {% for c in r.celle %}{% include "personale/_cella.html" %}{% endfor %}
+    </tr>
+  {% empty %}
+    <tr><td colspan="40" class="vuoto">Nessun militare in forza in questo mese.</td></tr>
+  {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr><td class="fisso c1"></td><td class="fisso c2"></td><td class="fisso c3"><strong>Presenti in sede</strong></td>
+    {% for p in presenti %}<td class="totale">{{ p }}</td>{% endfor %}</tr>
+  </tfoot>
+</table>
+</div>
+
+<h3>Legenda</h3>
+<div class="legenda">
+  {% for t in tipi %}<span class="etichetta" style="background:{{ t.colore_sfondo }};color:{{ t.colore_testo }}" title="{{ t.get_categoria_display }}">{{ t.codice }}</span> {{ t.descrizione }}{% if not forloop.last %} &nbsp; {% endif %}{% endfor %}
+</div>
+
+<dialog id="dlg">
+  <form method="dialog" class="dlg-chiudi"><button>✕</button></form>
+  <h2 id="dlg-titolo"></h2>
+  <table class="tabella" id="dlg-elenco"></table>
+  {% if puo_modificare %}
+  <h3>Aggiungi / modifica</h3>
+  <form id="dlg-form">
+    <select name="tipo" required>{% for t in tipi %}<option value="{{ t.pk }}">{{ t.codice }}{% if t.descrizione %} - {{ t.descrizione }}{% endif %}</option>{% endfor %}</select>
+    <input name="localita" placeholder="localita'">
+    <input name="quantita" placeholder="quantita' (es. ore)" size="8">
+    <textarea name="note" rows="2" placeholder="note"></textarea>
+    <label class="check"><input type="checkbox" name="sostituisci" value="1"> sostituisci gli altri codici del giorno</label>
+    <div class="azioni"><button class="primario">Salva</button> <button type="button" class="pericolo" id="dlg-svuota">Svuota casella</button></div>
+  </form>
+  {% endif %}
+</dialog>
+{% csrf_token %}
+{% endblock %}
+{% block script %}
+{% load static %}
+<script>
+const URL_DETTAGLIO = "{% url 'cella_dettaglio' %}";
+const URL_AGGIUNGI = "{% url 'cella_aggiungi' %}";
+const URL_ELIMINA = "{% url 'cella_elimina' %}";
+const PUO_MODIFICARE = {{ puo_modificare|yesno:"true,false" }};
+</script>
+<script src="{% static 'personale/ruolino.js' %}"></script>
+{% endblock %}

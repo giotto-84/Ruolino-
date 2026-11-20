@@ -1,4 +1,4 @@
-// Prove della logica pura: node --test apps-script/test/
+// Prove della logica pura: node --test apps-script/test/logica.test.js
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

@@ -75,4 +75,4 @@ Il link resta lo stesso.
 * Operatori e amministratori, avendo il Foglio condiviso in modifica, potrebbero anche aprirlo e modificarlo a mano.
   È meglio usare sempre la web app, perché il Foglio fa da archivio dei dati.
 * La versione per la rete interna (cartella principale del repository) resta disponibile come alternativa offline.
-* Per provare la logica: `node --test apps-script/test/`.
+* Per provare la logica: `node --test apps-script/test/logica.test.js`.

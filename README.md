@@ -1,5 +1,9 @@
 # Ruolino - controllo del personale
 
+> Sono disponibili due versioni:
+> * **Rete interna** (questa pagina): programma che gira su un PC dell'ufficio e non va su Internet.
+> * **Web app Google** (cartella [`apps-script/`](apps-script/LEGGIMI.md)): si condivide con un link e salva dati e file su Google Fogli/Drive.
+
 Programma per gestire il ruolino giornaliero del personale (il "brogliaccio"),
 la situazione della forza, licenze e recuperi, scadenze (idoneità, PEFO, tiri...).
 Gira su un PC dell'ufficio ed è consultabile dagli altri PC della **rete interna**

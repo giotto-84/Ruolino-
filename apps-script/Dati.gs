@@ -10,7 +10,7 @@ var TABELLE = {
   Impieghi: ['id', 'militare_id', 'data', 'codice', 'localita', 'quantita', 'note',
     'modificato_da', 'modificato_il'],
   Codici: ['codice', 'descrizione', 'categoria', 'colore_sfondo', 'colore_testo', 'presente_in_sede',
-    'contatore', 'quantita_giorno', 'scala_orario', 'ordine', 'attivo'],
+    'contatore', 'quantita_giorno', 'scala_orario', 'ordine', 'attivo', 'perde_forza'],
   Contatori: ['nome', 'unita', 'ordine', 'attivo'],
   Spettanze: ['id', 'militare_id', 'contatore', 'anno', 'quantita', 'note'],
   Movimenti: ['id', 'militare_id', 'contatore', 'anno', 'data', 'quantita', 'note'],
@@ -34,10 +34,32 @@ function db_() {
   return _db;
 }
 
+var _intestazioni = {};
+
 function foglio_(nome) {
   var sh = db_().getSheetByName(nome);
   if (!sh) throw new Error('Scheda "' + nome + '" mancante: eseguire setup dal menu Ruolino.');
+  if (!_intestazioni[nome]) {
+    _intestazioni[nome] = true;
+    try { aggiornaIntestazioni_(sh, nome); } catch (e) { /* utente in sola lettura */ }
+  }
   return sh;
+}
+
+/** Aggiunge le colonne nuove ai fogli creati con una versione precedente. */
+function aggiornaIntestazioni_(sh, nome) {
+  var campi = TABELLE[nome];
+  var attuali = sh.getRange(1, 1, 1, campi.length).getValues()[0].map(String);
+  if (attuali.join('|') === campi.join('|')) return;
+  sh.getRange(1, 1, 1, campi.length).setValues([campi]).setFontWeight('bold').setBackground('#e3ebe0');
+  if (nome === 'Codici' && attuali.indexOf('perde_forza') < 0) {
+    var col = campi.indexOf('perde_forza') + 1, ultima = sh.getLastRow();
+    if (ultima >= 2) {
+      var codici = sh.getRange(2, 1, ultima - 1, 1).getValues();
+      sh.getRange(2, col, ultima - 1, 1).setNumberFormat('@')
+        .setValues(codici.map(function (r) { return [String(r[0]).toUpperCase() === 'CONGEDO' ? 'SI' : 'NO']; }));
+    }
+  }
 }
 
 /** Restituisce tutte le righe della tabella come oggetti (con _riga = numero di riga nel foglio). */

@@ -32,6 +32,18 @@ function opzioni(lista, sel) {
 }
 /** argomento sicuro per onclick="..." */
 function J(v) { return esc(JSON.stringify(v === undefined ? null : v)); }
+/** selezione multipla: casella per riga, casella "tutti" in intestazione, pulsante elimina */
+function sel(gruppo, valore) { return '<input type="checkbox" class="sel" data-g="' + gruppo + '" value="' + esc(valore) + '" onchange="contaSel(\'' + gruppo + '\')">'; }
+function selTutti(gruppo) { return '<input type="checkbox" title="seleziona tutti" onchange="selezionaTutti(\'' + gruppo + '\', this.checked)">'; }
+function selezionaTutti(gruppo, v) { document.querySelectorAll('input.sel[data-g="' + gruppo + '"]').forEach(function (c) { c.checked = v; }); contaSel(gruppo); }
+function selezionati(gruppo) { return Array.prototype.map.call(document.querySelectorAll('input.sel[data-g="' + gruppo + '"]:checked'), function (c) { return c.value; }); }
+function contaSel(gruppo) {
+  var n = selezionati(gruppo).length, b = document.getElementById('elimina-' + gruppo);
+  if (b) { b.hidden = !n; b.textContent = b.dataset.testo + ' (' + n + ')'; }
+}
+function bottoneSel(gruppo, testo, funzione) {
+  return '<button type="button" class="bottone pericolo" hidden id="elimina-' + gruppo + '" data-testo="' + esc(testo) + '" onclick="' + funzione + '(selezionati(\'' + gruppo + '\'))">' + esc(testo) + '</button>';
+}
 function nomeMil(m) { return (m.grado + ' ' + m.cognome + ' ' + m.nome).trim(); }
 
 function api(azione, dati, silenzioso) {
@@ -298,7 +310,10 @@ function applicaPennello(td) {
   var base = { militare_id: td.dataset.m, data: td.dataset.d };
   var p = tipo === '__cancella' ? api('cellaElimina', base, true)
     : api('cellaSalva', Object.assign(base, { codice: tipo, localita: document.getElementById('pn-loc').value, sostituisci: document.getElementById('pn-sost').checked }), true);
-  p.then(function (lista) { sostituisciCella(base.militare_id, base.data, lista); },
+  p.then(function (lista) {
+    if (tipo !== '__cancella' && si(codice(tipo).perde_forza)) { document.getElementById('pn-tipo').value = ''; avviso('Non piu\' in forza da quel giorno'); ricarica(); return; }
+    sostituisciCella(base.militare_id, base.data, lista);
+  },
     function () { td.style.opacity = ''; delete td.dataset.inCorso; });
 }
 
@@ -328,55 +343,85 @@ function dialogoCella(mId, data) {
   var m = RU.militari.filter(function (x) { return x.id === mId; })[0];
   api('cella', { militare_id: mId, data: data }, true).then(function (lista) {
     RU.celle[mId + '|' + data] = lista;
+    RU.dlg = { m: mId, d: data };
     var mod = puo('Operatore');
     var h = '<h2>' + esc(nomeMil(m)) + ' - ' + it(data) + '</h2><table class="tabella">'
+      + (lista.length && mod ? '<tr><th>' + selTutti('voci') + '</th><th>Codice</th><th>Quantita\'</th><th>Note</th><th>Modificato</th></tr>' : '')
       + (lista.map(function (i) {
-        return '<tr><td>' + etichetta(i.c, i.l) + '</td><td>' + esc(num(i.q)) + '</td><td>' + esc(i.n) + '</td><td class="piccolo">' + esc((i.da || '') + ' ' + (i.il || '')) + '</td>'
-          + (mod ? '<td><button class="link pericolo" onclick="eliminaVoce(' + J(mId) + ',' + J(data) + ',' + J(i.id) + ')">elimina</button></td>' : '') + '</tr>';
-      }).join('') || '<tr><td class="vuoto">Nessun codice inserito.</td></tr>') + '</table>';
+        return '<tr>' + (mod ? '<td>' + sel('voci', i.id) + '</td>' : '') + '<td>' + etichetta(i.c, i.l) + '</td><td>' + esc(num(i.q)) + '</td><td>' + esc(i.n) + '</td><td class="piccolo">' + esc((i.da || '') + ' ' + (i.il || '')) + '</td></tr>';
+      }).join('') || '<tr><td class="vuoto">Nessun codice inserito.</td></tr>') + '</table>'
+      + (mod && lista.length ? '<p>' + bottoneSel('voci', 'Elimina selezionati', 'eliminaVoci') + '</p>' : '');
     if (mod) {
       h += '<h3>Aggiungi / modifica</h3>' + modulo('', [
         { n: 'codice', l: 'Codice', t: 'select', o: CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; }) },
+        { n: 'al', l: 'Fino al (compreso)', t: 'date', aiuto: 'Facoltativo: per mettere lo stesso codice su piu\' giorni (es. licenza dal ' + it(data) + ' al ...). Per il congedo non serve: vale da questo giorno in avanti.' },
+        { n: 'escludiFestivi', l: 'Nel periodo escludi sabati, domeniche e festivi', t: 'checkbox' },
         { n: 'localita', l: "Localita'" },
         { n: 'quantita', l: "Quantita' scalata (es. ore)", aiuto: "Vuoto = valore automatico (orario di lavoro o quantita' del codice)" },
         { n: 'note', l: 'Note', t: 'textarea' },
-        { n: 'sostituisci', l: 'Sostituisci gli altri codici del giorno', t: 'checkbox' }
-      ], '<button class="primario" id="salva">Salva</button> <button type="button" class="pericolo" onclick="svuotaCella(' + J(mId) + ',' + J(data) + ')">Svuota casella</button>');
+        { n: 'sostituisci', l: 'Sostituisci gli altri codici del giorno (o del periodo)', t: 'checkbox' }
+      ], '<button class="primario" id="salva">Salva</button> <button type="button" class="pericolo" onclick="svuotaCella(' + J(mId) + ',' + J(data) + ')">Svuota casella</button>')
+        + '<h3>Cancella un periodo</h3><div class="naviga">Cancella tutti i codici dal ' + it(data) + ' al <input type="date" id="canc-al"> '
+        + '<button type="button" id="canc-btn" class="bottone pericolo" onclick="cancellaPeriodoDa(' + J(mId) + ',' + J(data) + ')">Cancella</button></div>'
+        + '<p class="aiuto">Lascia la data vuota per cancellare da questo giorno in avanti.</p>';
     }
     apriDialogo(h);
     if (mod) alSalva(function (d) {
-      d.militare_id = mId; d.data = data; d.sostituisci = d.sostituisci === 'SI';
-      return api('cellaSalva', d).then(function (l) { sostituisciCella(mId, data, l); dialogoCella(mId, data); });
+      d.militare_id = mId; d.data = data; d.sostituisci = d.sostituisci === 'SI'; d.escludiFestivi = d.escludiFestivi === 'SI';
+      if (d.al && d.al < data) { avviso('La data finale e\' precedente al giorno della casella', true); return; }
+      var perde = si(codice(d.codice).perde_forza);
+      return api('cellaSalva', d).then(function (l) {
+        if (d.al || perde) {
+          chiudiDialogo(); avviso(perde ? nomeMil(m) + ': non e\' piu\' in forza dal ' + it(data) : 'Periodo inserito'); ricarica();
+        } else { sostituisciCella(mId, data, l); dialogoCella(mId, data); }
+      });
     });
   });
 }
 
-function eliminaVoce(mId, data, id) {
-  api('cellaElimina', { militare_id: mId, data: data, id: id }).then(function (l) { sostituisciCella(mId, data, l); dialogoCella(mId, data); });
+function eliminaVoci(ids) {
+  var mId = RU.dlg.m, data = RU.dlg.d;
+  if (!ids.length || !confirm('Eliminare ' + ids.length + ' codici?')) return;
+  api('cellaElimina', { militare_id: mId, data: data, ids: ids }).then(function () { chiudiDialogo(); ricarica(); });
+}
+function cancellaPeriodoDa(mId, data) {
+  var al = document.getElementById('canc-al').value;
+  if (al && al < data) { avviso('La data finale e\' precedente al giorno della casella', true); return; }
+  if (!confirm('Cancellare tutti i codici dal ' + it(data) + (al ? ' al ' + it(al) : ' in avanti') + '?')) return;
+  api('periodoElimina', { militari: [mId], dal: data, al: al }).then(function (n) { chiudiDialogo(); avviso('Cancellati ' + n + ' codici'); ricarica(); });
 }
 function svuotaCella(mId, data) {
   if (!confirm('Cancellare tutti i codici di questa casella?')) return;
-  api('cellaElimina', { militare_id: mId, data: data }).then(function (l) { sostituisciCella(mId, data, l); chiudiDialogo(); });
+  api('cellaElimina', { militare_id: mId, data: data }).then(function () { chiudiDialogo(); ricarica(); });
 }
 
 function dialogoPeriodo(mId) {
   var caricaMil = RU ? Promise.resolve(RU.militari) : api('militari');
   caricaMil.then(function (militari) {
-    apriDialogo(modulo('Inserimento per periodo', [
+    apriDialogo(modulo('Periodo: inserisci o cancella', [
+      { n: 'azione', l: 'Operazione', t: 'select', o: [['inserisci', 'Inserisci un codice nel periodo'], ['cancella', 'Cancella i codici nel periodo']] },
       { n: 'militari', l: 'Militari', t: 'multi', o: militari.filter(function (m) { return m.stato !== 'PER'; }).map(function (m) { return [m.id, nomeMil(m)]; }), v: mId ? [mId] : [], aiuto: "Tenere premuto CTRL per selezionarne piu' di uno." },
-      { n: 'codice', l: 'Codice', t: 'select', o: CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; }) },
+      { n: 'codice', l: 'Codice', t: 'select', o: [['', '(cancella: tutti i codici)']].concat(CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; })), v: CFG.codiciAttivi.length ? CFG.codiciAttivi[0].codice : '' },
       { n: 'localita', l: "Localita'" },
       { n: 'dal', l: 'Dal', t: 'date', req: true, v: oggi() },
-      { n: 'al', l: 'Al', t: 'date', req: true, v: oggi() },
+      { n: 'al', l: 'Al (compreso)', t: 'date', v: oggi(), aiuto: 'Per il congedo non serve: vale dal giorno indicato in avanti. Per la cancellazione, vuoto = dal giorno indicato in avanti.' },
       { n: 'escludiFestivi', l: 'Escludi sabati, domeniche e festivi', t: 'checkbox' },
       { n: 'sostituisci', l: "Sostituisci i codici gia' presenti in quei giorni", t: 'checkbox' },
       { n: 'note', l: 'Note', t: 'textarea' }
     ]));
     alSalva(function (d) {
       d.escludiFestivi = d.escludiFestivi === 'SI'; d.sostituisci = d.sostituisci === 'SI';
+      var vai = function () { var p = d.dal.split('-'); location.hash = 'ruolino/' + Number(p[0]) + '/' + Number(p[1]); ricarica(); };
+      if (!d.militari.length) { avviso('Scegli almeno un militare', true); return; }
+      if (d.azione === 'cancella') {
+        if (!confirm('Cancellare ' + (d.codice || 'tutti i codici') + ' dal ' + it(d.dal) + (d.al ? ' al ' + it(d.al) : ' in avanti') + ' per ' + d.militari.length + ' militari?')) return;
+        return api('periodoElimina', d).then(function (n) { chiudiDialogo(); avviso('Cancellati ' + n + ' codici'); vai(); });
+      }
+      if (!d.codice) { avviso('Scegli il codice da inserire', true); return; }
       return api('periodo', d).then(function (n) {
-        chiudiDialogo(); avviso('Inseriti ' + n + ' giorni di ' + d.codice);
-        var p = d.dal.split('-'); location.hash = 'ruolino/' + Number(p[0]) + '/' + Number(p[1]); ricarica();
+        chiudiDialogo();
+        avviso(si(codice(d.codice).perde_forza) ? n + ' militari non piu\' in forza dal ' + it(d.dal) : 'Inseriti ' + n + ' giorni di ' + d.codice);
+        vai();
       });
     });
   });
@@ -395,6 +440,7 @@ function vistaMilitari() {
     MIL_CACHE = lista;
     main('<div class="intestazione"><h1>Militari</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico" oninput="filtraMilitari()">'
       + '<label class="check"><input type="checkbox" id="persi" onchange="filtraMilitari()"> mostra persi dalla forza</label>'
+      + (puo('Amministratore') ? bottoneSel('mil', 'Elimina selezionati', 'eliminaMilitari') : '')
       + (puo('Operatore') ? '<button class="bottone primario" onclick="dialogoMilitare()">+ Nuovo militare</button>' : '') + '</div></div>'
       + '<table class="tabella" id="tab-mil"></table>');
     filtraMilitari();
@@ -405,12 +451,13 @@ function filtraMilitari() {
   var righe = MIL_CACHE.filter(function (m) {
     return (persi || m.stato !== 'PER') && (!q || (m.cognome + ' ' + m.nome + ' ' + m.incarico).toUpperCase().indexOf(q) >= 0);
   });
-  document.getElementById('tab-mil').innerHTML = '<tr><th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>'
+  var adm = puo('Amministratore');
+  document.getElementById('tab-mil').innerHTML = '<tr>' + (adm ? '<th>' + selTutti('mil') + '</th>' : '') + '<th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>'
     + (righe.map(function (m) {
-      return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '"><td>' + esc(m.grado) + '</td><td><a href="#militare/' + esc(m.id) + '"><strong>' + esc(m.cognome) + '</strong></a></td><td>' + esc(m.nome)
+      return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '">' + (adm ? '<td>' + sel('mil', m.id) + '</td>' : '') + '<td>' + esc(m.grado) + '</td><td><a href="#militare/' + esc(m.id) + '"><strong>' + esc(m.cognome) + '</strong></a></td><td>' + esc(m.nome)
         + '</td><td>' + esc(m.incarico) + '</td><td>' + esc(m.patenti) + '</td><td>' + esc(m.telefono) + '</td><td>' + esc(STATI_MIL[m.stato] || m.stato) + '</td><td>'
         + (puo('Operatore') ? '<button class="link" onclick="dialogoMilitare(' + J(m.id) + ')">modifica</button>' : '') + '</td></tr>';
-    }).join('') || '<tr><td colspan="8" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>');
+    }).join('') || '<tr><td colspan="9" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>');
 }
 
 function dialogoMilitare(id) {
@@ -426,16 +473,17 @@ function dialogoMilitare(id) {
     { n: 'ordine', l: 'Posizione nel ruolino', t: 'number', v: m.ordine, aiuto: 'Vuoto = ordine per grado e cognome.' },
     { n: 'note', l: 'Note', t: 'textarea', v: m.note }
   ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
-    + (id && puo('Amministratore') ? ' <button type="button" class="pericolo" onclick="eliminaMilitare(' + J(id) + ')">Elimina</button>' : '')));
+    + (id && puo('Amministratore') ? ' <button type="button" class="pericolo" onclick="eliminaMilitari([' + J(id) + '])">Elimina</button>' : '')));
   alSalva(function (d) {
     d.id = id || '';
     return api('militareSalva', d).then(function (nuovoId) { chiudiDialogo(); avviso('Salvato'); location.hash = 'militare/' + nuovoId; ricarica(); });
   });
 }
 
-function eliminaMilitare(id) {
-  if (!confirm("Eliminare definitivamente il militare con ruolino, licenze e scadenze?\nSe e' stato trasferito conviene indicare la data 'perso dalla forza'.")) return;
-  api('militareElimina', { id: id }).then(function () { chiudiDialogo(); avviso('Eliminato'); location.hash = 'militari'; });
+function eliminaMilitari(ids) {
+  if (!ids.length) return;
+  if (!confirm('Eliminare definitivamente ' + (ids.length > 1 ? ids.length + ' militari' : 'il militare') + ' con ruolino, licenze e scadenze?\nPer chi va in congedo o viene trasferito conviene usare il codice CONGEDO o la data "perso dalla forza".')) return;
+  api('militareElimina', { ids: ids }).then(function (n) { chiudiDialogo(); avviso('Eliminati ' + n + ' militari'); MIL_CACHE = []; if (location.hash === '#militari') ricarica(); else location.hash = 'militari'; });
 }
 
 function vistaMilitare(id, anno) {
@@ -457,18 +505,18 @@ function vistaMilitare(id, anno) {
       }).join('') + '</table>';
     var mov = r.movimenti.filter(function (x) { return String(x.anno) === String(anno); });
     if (mov.length) {
-      h += '<h3>Movimenti manuali</h3><table class="tabella">' + mov.map(function (x) {
-        return '<tr><td>' + it(x.data) + '</td><td>' + esc(x.contatore) + '</td><td>' + num(x.quantita) + '</td><td>' + esc(x.note) + '</td><td>'
-          + (mod ? '<button class="link pericolo" onclick="eliminaMovimento(' + J(x.id) + ')">elimina</button>' : '') + '</td></tr>';
+      h += '<h3>Movimenti manuali ' + (mod ? bottoneSel('mov', 'Elimina selezionati', 'eliminaMovimenti') : '') + '</h3><table class="tabella">'
+        + (mod ? '<tr><th>' + selTutti('mov') + '</th><th>Data</th><th>Contatore</th><th>Quantita\'</th><th>Motivo</th></tr>' : '') + mov.map(function (x) {
+        return '<tr>' + (mod ? '<td>' + sel('mov', x.id) + '</td>' : '') + '<td>' + it(x.data) + '</td><td>' + esc(x.contatore) + '</td><td>' + num(x.quantita) + '</td><td>' + esc(x.note) + '</td></tr>';
       }).join('') + '</table>';
     }
-    h += '</section></div><section class="riquadro"><h2>Scadenze ' + (mod ? '<button class="link piccolo" onclick="dialogoScadenza(null,' + J(m.id) + ')">+ registra</button>' : '') + '</h2>'
-      + '<table class="tabella"><tr><th>Tipo</th><th>Eseguita</th><th>Scadenza</th><th>Esito</th><th>Note</th><th>Documento</th><th></th></tr>'
+    h += '</section></div><section class="riquadro"><h2>Scadenze ' + (mod ? '<button class="link piccolo" onclick="dialogoScadenza(null,' + J(m.id) + ')">+ registra</button> ' + bottoneSel('scad', 'Elimina selezionate', 'eliminaScadenze') : '') + '</h2>'
+      + '<table class="tabella"><tr>' + (mod ? '<th>' + selTutti('scad') + '</th>' : '') + '<th>Tipo</th><th>Eseguita</th><th>Scadenza</th><th>Esito</th><th>Note</th><th>Documento</th><th></th></tr>'
       + (r.scadenze.map(function (s) {
-        return '<tr class="' + (s.stato === 'storico' ? 'spento' : 'st-' + s.stato) + '"><td>' + esc(s.tipo) + '</td><td>' + it(s.data_esecuzione) + '</td><td>' + it(s.data_scadenza) + '</td><td>' + esc(s.esito) + '</td><td>' + esc(s.note) + '</td><td>'
+        return '<tr class="' + (s.stato === 'storico' ? 'spento' : 'st-' + s.stato) + '">' + (mod ? '<td>' + sel('scad', s.id) + '</td>' : '') + '<td>' + esc(s.tipo) + '</td><td>' + it(s.data_esecuzione) + '</td><td>' + it(s.data_scadenza) + '</td><td>' + esc(s.esito) + '</td><td>' + esc(s.note) + '</td><td>'
           + (s.documento_url ? '<a class="link-doc" target="_blank" href="' + esc(s.documento_url) + '">' + esc(s.documento_nome || 'apri') + '</a>' : '') + '</td><td>'
           + (mod ? '<button class="link" onclick="dialogoScadenza(' + J(s) + ')">modifica</button>' : '') + '</td></tr>';
-      }).join('') || '<tr><td colspan="7" class="vuoto">Nessuna scadenza registrata.</td></tr>') + '</table></section>'
+      }).join('') || '<tr><td colspan="8" class="vuoto">Nessuna scadenza registrata.</td></tr>') + '</table></section>'
       + '<section class="riquadro"><h2>Impieghi (ultimi 30 giorni e prossimi 60)</h2><table class="tabella">'
       + (r.impieghi.map(function (i) { return '<tr><td>' + it(i.data) + '</td><td>' + etichetta(i.codice, i.localita) + '</td><td>' + esc(i.note) + '</td></tr>'; }).join('') || '<tr><td class="vuoto">Nessun impiego nel periodo.</td></tr>')
       + '</table></section>';
@@ -498,8 +546,8 @@ function dialogoMovimento(mId, contatore, anno) {
     return api('movimentoSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); ricarica(); });
   });
 }
-function eliminaMovimento(id) {
-  if (confirm('Eliminare il movimento?')) api('movimentoElimina', { id: id }).then(ricarica);
+function eliminaMovimenti(ids) {
+  if (ids.length && confirm('Eliminare ' + ids.length + ' movimenti?')) api('movimentoElimina', { ids: ids }).then(function () { ricarica(); });
 }
 
 function vistaLicenze(anno) {
@@ -559,7 +607,7 @@ function dialogoScadenza(s, mId, tipo) {
       { n: 'esito', l: 'Esito', v: s.esito }, { n: 'note', l: 'Note', v: s.note },
       { n: 'file', l: 'Documento (PDF, foto...) da allegare su Google Drive', t: 'file', aiuto: s.documento_nome ? 'Gia\' allegato: ' + s.documento_nome + ' (un nuovo file lo sostituisce nel registro)' : '' }
     ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
-      + (s.id ? ' <button type="button" class="pericolo" onclick="eliminaScadenza(' + J(s.id) + ')">Elimina</button>' : '')));
+      + (s.id ? ' <button type="button" class="pericolo" onclick="eliminaScadenze([' + J(s.id) + '])">Elimina</button>' : '')));
     alSalva(function (d) {
       d.id = s.id || '';
       return leggiFile(document.querySelector('#modulo [name=file]')).then(function (f) {
@@ -569,8 +617,9 @@ function dialogoScadenza(s, mId, tipo) {
     });
   });
 }
-function eliminaScadenza(id) {
-  if (confirm('Eliminare la scadenza (e il documento allegato)?')) api('scadenzaElimina', { id: id }).then(function () { chiudiDialogo(); ricarica(); });
+function eliminaScadenze(ids) {
+  if (ids.length && confirm('Eliminare ' + (ids.length > 1 ? ids.length + ' scadenze' : 'la scadenza') + ' (e i documenti allegati)?'))
+    api('scadenzaElimina', { ids: ids }).then(function (n) { chiudiDialogo(); avviso('Eliminate ' + n + ' scadenze'); ricarica(); });
 }
 
 // ---------------------------------------------------------------- configurazione
@@ -587,25 +636,27 @@ function vistaConfig(tab) {
   var adm = puo('Amministratore'), def = CONFIG_TAB[tab];
   var h = '<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === tab ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
     + '<div class="intestazione"><h1>' + def.titolo + '</h1><div class="naviga">'
-    + (adm && tab !== 'Orario' ? '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
+    + (adm && tab !== 'Orario' ? bottoneSel('cfg', 'Elimina selezionati', 'eliminaConfigSel') + '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
     + (adm ? '<button class="bottone" onclick="backupOra()">Backup ora</button>' : '') + '</div></div><table class="tabella">';
   var mod = function (v) { return adm ? '<button class="link" onclick="dialogoConfig(' + J(tab) + ',' + J(v) + ')">modifica</button>' : ''; };
+  var cs = function (v) { return adm ? '<td>' + sel('cfg', v) + '</td>' : ''; }, ct = adm ? '<th>' + selTutti('cfg') + '</th>' : '';
+  CONFIG_ATTIVA = tab;
   if (tab === 'Codici') {
-    h += '<tr><th>Codice</th><th>Descrizione</th><th>Categoria</th><th>Presente in sede</th><th>Scala da</th><th>Attivo</th><th></th></tr>' + CFG.codici.map(function (k) {
-      return '<tr class="' + (si(k.attivo) ? '' : 'spento') + '"><td>' + etichetta(k.codice) + '</td><td>' + esc(k.descrizione) + '</td><td>' + esc(CATEGORIE[k.categoria] || k.categoria) + '</td><td>' + (si(k.presente_in_sede) ? "si'" : 'no') + '</td><td>'
+    h += '<tr>' + ct + '<th>Codice</th><th>Descrizione</th><th>Categoria</th><th>Presente in sede</th><th>Scala da</th><th>Attivo</th><th></th></tr>' + CFG.codici.map(function (k) {
+      return '<tr class="' + (si(k.attivo) ? '' : 'spento') + '">' + cs(k.codice) + '<td>' + etichetta(k.codice) + (si(k.perde_forza) ? ' <small title="fa perdere la forza">⇥ perde la forza</small>' : '') + '</td><td>' + esc(k.descrizione) + '</td><td>' + esc(CATEGORIE[k.categoria] || k.categoria) + '</td><td>' + (si(k.presente_in_sede) ? "si'" : 'no') + '</td><td>'
         + (k.contatore ? esc(k.contatore) + ' (' + (si(k.scala_orario) ? 'secondo orario' : num(k.quantita_giorno) + '/giorno') + ')' : '') + '</td><td>' + (si(k.attivo) ? "si'" : 'no') + '</td><td>' + mod(k.codice) + '</td></tr>';
     }).join('');
   } else if (tab === 'TipiScadenza') {
-    h += '<tr><th>Nome</th><th>Validita\'</th><th>Preavviso</th><th>Obbligatoria</th><th>Descrizione</th><th></th></tr>' + CFG.tipiScadenza.map(function (t) {
-      return '<tr><td>' + esc(t.nome) + '</td><td>' + (t.validita_mesi ? esc(t.validita_mesi) + ' mesi' : 'data inserita a mano') + '</td><td>' + esc(t.preavviso_giorni) + ' gg</td><td>' + (si(t.obbligatoria) ? "si'" : 'no') + '</td><td>' + esc(t.descrizione) + '</td><td>' + mod(t.nome) + '</td></tr>';
+    h += '<tr>' + ct + '<th>Nome</th><th>Validita\'</th><th>Preavviso</th><th>Obbligatoria</th><th>Descrizione</th><th></th></tr>' + CFG.tipiScadenza.map(function (t) {
+      return '<tr>' + cs(t.nome) + '<td>' + esc(t.nome) + '</td><td>' + (t.validita_mesi ? esc(t.validita_mesi) + ' mesi' : 'data inserita a mano') + '</td><td>' + esc(t.preavviso_giorni) + ' gg</td><td>' + (si(t.obbligatoria) ? "si'" : 'no') + '</td><td>' + esc(t.descrizione) + '</td><td>' + mod(t.nome) + '</td></tr>';
     }).join('');
   } else if (tab === 'Contatori') {
-    h += '<tr><th>Nome</th><th>Unita\'</th><th>Attivo</th><th></th></tr>' + CFG.contatori.map(function (c) {
-      return '<tr><td>' + esc(c.nome) + '</td><td>' + (c.unita === 'ORE' ? 'Ore' : 'Giorni') + '</td><td>' + (si(c.attivo) ? "si'" : 'no') + '</td><td>' + mod(c.nome) + '</td></tr>';
+    h += '<tr>' + ct + '<th>Nome</th><th>Unita\'</th><th>Attivo</th><th></th></tr>' + CFG.contatori.map(function (c) {
+      return '<tr>' + cs(c.nome) + '<td>' + esc(c.nome) + '</td><td>' + (c.unita === 'ORE' ? 'Ore' : 'Giorni') + '</td><td>' + (si(c.attivo) ? "si'" : 'no') + '</td><td>' + mod(c.nome) + '</td></tr>';
     }).join('');
   } else if (tab === 'Gradi') {
-    h += '<tr><th>Sigla</th><th>Descrizione</th><th>Ordine</th><th></th></tr>' + CFG.gradi.map(function (g) {
-      return '<tr><td>' + esc(g.sigla) + '</td><td>' + esc(g.descrizione) + '</td><td>' + esc(g.ordine) + '</td><td>' + mod(g.sigla) + '</td></tr>';
+    h += '<tr>' + ct + '<th>Sigla</th><th>Descrizione</th><th>Ordine</th><th></th></tr>' + CFG.gradi.map(function (g) {
+      return '<tr>' + cs(g.sigla) + '<td>' + esc(g.sigla) + '</td><td>' + esc(g.descrizione) + '</td><td>' + esc(g.ordine) + '</td><td>' + mod(g.sigla) + '</td></tr>';
     }).join('');
   } else {
     var o = CFG.orario;
@@ -625,6 +676,7 @@ function dialogoConfig(tab, valore) {
       { n: 'colore_sfondo', l: 'Colore sfondo', t: 'color', v: o.colore_sfondo || '#FFFFFF' },
       { n: 'colore_testo', l: 'Colore testo', t: 'color', v: o.colore_testo || '#000000' },
       { n: 'presente_in_sede', l: 'Conta come presente in sede', t: 'checkbox', v: valore ? o.presente_in_sede : 'SI' },
+      { n: 'perde_forza', l: "Fa perdere la forza (congedo, trasferimento): dal giorno inserito il militare non e' piu' in forza", t: 'checkbox', v: o.perde_forza },
       { n: 'contatore', l: 'Scala dal contatore', t: 'select', o: [['', '— nessuno —']].concat(CFG.contatori.map(function (c) { return c.nome; })), v: o.contatore },
       { n: 'quantita_giorno', l: "Quantita' per giorno", t: 'number', v: o.quantita_giorno || 1 },
       { n: 'scala_orario', l: "Scala le ore secondo l'orario di lavoro (invece della quantita' fissa)", t: 'checkbox', v: o.scala_orario },
@@ -642,17 +694,24 @@ function dialogoConfig(tab, valore) {
   }[tab];
   apriDialogo(modulo(def.titolo + (valore ? ' - modifica' : ' - nuovo'), campi,
     '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
-    + (valore ? ' <button type="button" class="pericolo" onclick="eliminaConfig(' + J(tab) + ',' + J(valore) + ')">Elimina</button>' : '')));
+    + (valore ? ' <button type="button" class="pericolo" onclick="eliminaConfig(' + J(tab) + ',[' + J(valore) + '])">Elimina</button>' : '')));
   alSalva(function (d) {
     return api('configSalva', { tabella: tab, originale: valore || '', oggetto: d }).then(function () {
       chiudiDialogo(); avviso('Salvato'); return ricaricaConfig().then(ricarica);
     });
   });
 }
-function eliminaConfig(tab, valore) {
-  if (!confirm('Eliminare "' + valore + '"?')) return;
-  api('configElimina', { tabella: tab, valore: valore }).then(function () { chiudiDialogo(); return ricaricaConfig().then(ricarica); });
+function eliminaConfig(tab, valori) {
+  if (!valori.length || !confirm('Eliminare ' + valori.join(', ') + '?')) return;
+  api('configElimina', { tabella: tab, valori: valori }).then(function (r) {
+    chiudiDialogo();
+    avviso('Eliminati: ' + r.eliminati.join(', '));
+    if (r.usati.length) avviso('Non eliminati perche\' in uso (si possono disattivare): ' + r.usati.join(', '), true);
+    return ricaricaConfig().then(ricarica);
+  });
 }
+var CONFIG_ATTIVA = "Codici";
+function eliminaConfigSel(valori) { eliminaConfig(CONFIG_ATTIVA, valori); }
 function dialogoOrario() {
   var o = CFG.orario, nomi = { lun: "Lunedi'", mar: "Martedi'", mer: "Mercoledi'", gio: "Giovedi'", ven: "Venerdi'", sab: 'Sabato', dom: 'Domenica' };
   apriDialogo(modulo('Orario di lavoro (ore per giorno)', Object.keys(nomi).map(function (g) { return { n: g, l: nomi[g], t: 'number', v: o[g] }; })
@@ -686,12 +745,12 @@ function vistaImporta() {
 // ---------------------------------------------------------------- utenti e registro
 function vistaUtenti() {
   api('utenti').then(function (lista) {
-    main('<div class="intestazione"><h1>Utenti</h1><button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div>'
+    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
       + '<p class="aiuto">Aggiungendo un utente, il Foglio dati e la cartella Drive vengono condivisi automaticamente con il suo account Google: '
       + 'in modifica per Amministratori e Operatori, in sola lettura per Consultazione. Rimuovendolo, la condivisione viene tolta.</p>'
-      + '<table class="tabella"><tr><th>Email</th><th>Nome</th><th>Ruolo</th><th></th></tr>' + lista.map(function (u) {
-        return '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
-          + (u.email !== UTENTE.email ? ' | <button class="link pericolo" onclick="eliminaUtente(' + J(u.email) + ')">rimuovi</button>' : '') + '</td></tr>';
+      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Email</th><th>Nome</th><th>Ruolo</th><th></th></tr>' + lista.map(function (u) {
+        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
+          + '</td></tr>';
       }).join('') + '</table>');
   });
 }
@@ -705,8 +764,8 @@ function dialogoUtente(u) {
   if (u.email) document.querySelector('#modulo [name=email]').readOnly = true;
   alSalva(function (d) { return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato e file condivisi'); ricarica(); }); });
 }
-function eliminaUtente(email) {
-  if (confirm('Rimuovere ' + email + ' e togliere la condivisione dei file?')) api('utenteElimina', { email: email }).then(ricarica);
+function eliminaUtenti(emails) {
+  if (emails.length && confirm('Rimuovere ' + emails.join(', ') + ' e togliere la condivisione dei file?')) api('utenteElimina', { emails: emails }).then(function () { ricarica(); });
 }
 function vistaRegistro() {
   api('registro').then(function (r) {

@@ -51,7 +51,7 @@ var CODICI_INIZIALI = [
   ['GMF', 'Licenza per gravi motivi familiari', 'ASS', '#9CC2E5', '#000000', 'NO', ''],
   ['RMD', 'Riposo medico domiciliare', 'ASS', '#7030A0', '#FFFFFF', 'NO', ''],
   ['PERM', 'Permesso', 'ASS', '#9CC2E5', '#000000', 'NO', ''],
-  ['CONGEDO', 'Congedo', 'ASS', '#9CC2E5', '#000000', 'NO', ''],
+  ['CONGEDO', 'Congedo (da quel giorno non e\' piu\' in forza)', 'ASS', '#9CC2E5', '#000000', 'NO', ''],
   ['S.S.', 'Operazione Strade Sicure', 'FUO', '#00B050', '#000000', 'NO', ''],
   ['S.I.', 'Servizio isolato', 'FUO', '#92D050', '#000000', 'NO', ''],
   ['LEONTE', 'Operazione Leonte (Libano)', 'FUO', '#FFC000', '#000000', 'NO', ''],
@@ -110,7 +110,7 @@ function setup() {
       var ore = c[6] === 'Ore di recupero';
       return { codice: c[0], descrizione: c[1], categoria: c[2], colore_sfondo: c[3], colore_testo: c[4],
         presente_in_sede: c[5], contatore: c[6], quantita_giorno: 1, scala_orario: ore ? 'SI' : 'NO',
-        ordine: (i + 1) * 10, attivo: 'SI' };
+        ordine: (i + 1) * 10, attivo: 'SI', perde_forza: c[0] === 'CONGEDO' ? 'SI' : 'NO' };
     }));
   }
   if (!leggi_('TipiScadenza').length) {

@@ -10,7 +10,8 @@ var TABELLE = {
   Impieghi: ['id', 'militare_id', 'data', 'codice', 'localita', 'quantita', 'note',
     'modificato_da', 'modificato_il'],
   Codici: ['codice', 'descrizione', 'categoria', 'colore_sfondo', 'colore_testo', 'presente_in_sede',
-    'contatore', 'quantita_giorno', 'scala_orario', 'ordine', 'attivo', 'perde_forza'],
+    'contatore', 'quantita_giorno', 'scala_orario', 'ordine', 'attivo', 'perde_forza',
+    'rc_dopo', 'giorni'],
   Contatori: ['nome', 'unita', 'ordine', 'attivo'],
   Spettanze: ['id', 'militare_id', 'contatore', 'anno', 'quantita', 'note'],
   Movimenti: ['id', 'militare_id', 'contatore', 'anno', 'data', 'quantita', 'note'],
@@ -52,6 +53,16 @@ function aggiornaIntestazioni_(sh, nome) {
   var attuali = sh.getRange(1, 1, 1, campi.length).getValues()[0].map(String);
   if (attuali.join('|') === campi.join('|')) return;
   sh.getRange(1, 1, 1, campi.length).setValues([campi]).setFontWeight('bold').setBackground('#e3ebe0');
+  if (nome === 'Codici' && attuali.indexOf('rc_dopo') < 0) {
+    var colRc = campi.indexOf('rc_dopo') + 1, ultimaRiga = sh.getLastRow();
+    if (ultimaRiga >= 2) {
+      var cod = sh.getRange(2, 1, ultimaRiga - 1, 1).getValues();
+      sh.getRange(2, colRc, ultimaRiga - 1, 2).setNumberFormat('@').setValues(cod.map(function (r) {
+        var c = String(r[0]).toUpperCase();
+        return c === 'GUARDIA A' ? ['SI', ''] : c === 'GUARDIA B' ? ['SI', '23456'] : ['NO', ''];
+      }));
+    }
+  }
   if (nome === 'Codici' && attuali.indexOf('perde_forza') < 0) {
     var col = campi.indexOf('perde_forza') + 1, ultima = sh.getLastRow();
     if (ultima >= 2) {

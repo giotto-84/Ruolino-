@@ -52,6 +52,17 @@ function festivita_(anno) {
   return _festivita[anno];
 }
 
+/** Giorno della settimana 1 = lunedi' ... 7 = domenica */
+function giornoISO_(s) { var g = parseData_(s).getUTCDay(); return g === 0 ? 7 : g; }
+
+var NOMI_GIORNI = ['', "lun", "mar", "mer", "gio", "ven", "sab", "dom"];
+
+/** giorni = stringa di cifre ISO ammesse (es. '23456' = mar-sab); vuota = tutti i giorni */
+function giornoAmmesso_(giorni, s) {
+  giorni = String(giorni || '').replace(/[^1-7]/g, '');
+  return !giorni || giorni.indexOf(String(giornoISO_(s))) >= 0;
+}
+
 function festivo_(s) {
   var d = parseData_(s), wd = d.getUTCDay();
   return wd === 0 || wd === 6 || !!festivita_(d.getUTCFullYear())[s];
@@ -201,6 +212,7 @@ if (typeof module !== 'undefined') {
     pasqua_: pasqua_, festivita_: festivita_, festivo_: festivo_, giorniMese_: giorniMese_,
     aggiungiMesi_: aggiungiMesi_, statoScadenza_: statoScadenza_, oreDelGiorno_: oreDelGiorno_,
     quantitaScalata_: quantitaScalata_, inForza_: inForza_, creaInterprete_: creaInterprete_,
-    colonneDate_: colonneDate_, normalizzaGrado_: normalizzaGrado_, aggiungiGiorni_: aggiungiGiorni_
+    colonneDate_: colonneDate_, normalizzaGrado_: normalizzaGrado_, aggiungiGiorni_: aggiungiGiorni_,
+    giornoISO_: giornoISO_, giornoAmmesso_: giornoAmmesso_
   };
 }

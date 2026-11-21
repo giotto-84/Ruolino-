@@ -79,3 +79,13 @@ test('colonne delle date', () => {
   const r2 = ['', '', '', '', '', '', '', 30, 31, 1];
   assert.deepStrictEqual(P(L.colonneDate_(r1, r2, 2026, 7)), { 7: '2026-08-30', 8: '2026-08-31', 9: '2026-09-01' });
 });
+
+test('giorni ammessi (guardia B mar-sab)', () => {
+  assert.strictEqual(L.giornoISO_('2026-11-23'), 1); // lunedi
+  assert.strictEqual(L.giornoISO_('2026-11-22'), 7); // domenica
+  assert.ok(L.giornoAmmesso_('23456', '2026-11-24')); // martedi
+  assert.ok(L.giornoAmmesso_('23456', '2026-11-28')); // sabato
+  assert.ok(!L.giornoAmmesso_('23456', '2026-11-29')); // domenica
+  assert.ok(!L.giornoAmmesso_('23456', '2026-11-23')); // lunedi
+  assert.ok(L.giornoAmmesso_('', '2026-11-29'));
+});

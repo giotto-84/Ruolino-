@@ -111,12 +111,15 @@ function situazione_(d) {
   leggi_('Impieghi').forEach(function (i) {
     if (i.data === giorno && i.codice !== 'NOTA') (perMil[i.militare_id] = perMil[i.militare_id] || []).push(i);
   });
-  var presenti = [], servizio = [], assenti = {}, fuori = {};
+  var presenti = [], servizio = [], assenti = {}, fuori = {}, liberi = [];
+  var festivo = festivo_(giorno);
   militari.forEach(function (m) {
     var lista = perMil[m.id] || [];
     var ass = lista.filter(function (i) { return codici[i.codice] && !vero_(codici[i.codice].presente_in_sede); })[0];
     var voce = { id: m.id, nome: nomeMil_(m), impieghi: lista.map(function (i) { return { codice: i.codice, localita: i.localita }; }) };
-    if (!ass) {
+    if (!ass && festivo && !lista.length) {
+      liberi.push(voce); // sabato, domenica e festivi: in sede solo chi ha un servizio o un'attivita'
+    } else if (!ass) {
       presenti.push(voce);
       if (lista.some(function (i) { return codici[i.codice] && codici[i.codice].categoria === 'SER'; })) servizio.push(voce);
     } else {
@@ -127,6 +130,7 @@ function situazione_(d) {
   var sc = statoScadenze_(d.oggi || giorno);
   return {
     forza: militari.length, presenti: presenti, servizio: servizio, assenti: assenti, fuori: fuori,
+    liberi: liberi, festivo: festivo,
     scadute: sc.scadute, inScadenza: sc.inScadenza, mancanti: sc.mancanti.length
   };
 }
@@ -170,6 +174,13 @@ function eliminaImpieghi_(condizione) {
   elimina_('Impieghi', condizione);
   var perde = {};
   leggi_('Codici').forEach(function (c) { if (vero_(c.perde_forza)) perde[c.codice] = true; });
+  var rcDopo = {};
+  leggi_('Codici').forEach(function (c) { if (vero_(c.rc_dopo)) rcDopo[c.codice] = true; });
+  tolti.forEach(function (i) {
+    if (!rcDopo[i.codice]) return;
+    var dopo = aggiungiGiorni_(i.data, 1), nota = notaSmonto_(i.codice, i.data);
+    elimina_('Impieghi', function (x) { return x.militare_id === i.militare_id && x.data === dopo && x.codice === 'RC' && x.note === nota; });
+  });
   tolti.forEach(function (i) {
     if (!perde[i.codice]) return;
     var m = leggi_('Militari').filter(function (x) { return x.id === i.militare_id; })[0];
@@ -182,16 +193,46 @@ function eliminaImpieghi_(condizione) {
   return tolti.length;
 }
 
+// ---------------------------------------------------------------------------
+// Servizi con smonto (guardie): il giorno dopo RC
+// ---------------------------------------------------------------------------
+function notaSmonto_(codice, data) {
+  var p = data.split('-');
+  return 'Smonto ' + codice + ' del ' + p[2] + '/' + p[1] + '/' + p[0];
+}
+
+function verificaGiorno_(cod, data) {
+  if (giornoAmmesso_(cod.giorni, data)) return;
+  var ammessi = String(cod.giorni).replace(/[^1-7]/g, '').split('').map(function (g) { return NOMI_GIORNI[g]; }).join(', ');
+  throw new Error(cod.codice + ' si puo\' inserire solo nei giorni: ' + ammessi + ' (il ' + data.split('-').reverse().join('/') + ' e\' ' +
+    NOMI_GIORNI[giornoISO_(data)] + '). I giorni si cambiano in Configurazione > Codici.');
+}
+
+/** Mette RC il giorno successivo al servizio (sostituendo gli altri codici di quel giorno). */
+function aggiungiSmonto_(m, data, codice, utente) {
+  var dopo = aggiungiGiorni_(data, 1);
+  if (!inForza_(m, dopo) || !mappa_(leggi_('Codici'), 'codice')['RC']) return;
+  var nota = notaSmonto_(codice, data);
+  eliminaImpieghi_(function (i) { return i.militare_id === m.id && i.data === dopo && i.codice !== 'RC'; });
+  var quando = Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd HH:mm');
+  var es = leggi_('Impieghi').filter(function (i) { return i.militare_id === m.id && i.data === dopo && i.codice === 'RC'; })[0];
+  if (es) { es.note = nota; es.modificato_da = utente.email; es.modificato_il = quando; aggiorna_('Impieghi', es); }
+  else aggiungi_('Impieghi', [{ id: nuovoId_(), militare_id: m.id, data: dopo, codice: 'RC', localita: '', quantita: '',
+    note: nota, modificato_da: utente.email, modificato_il: quando }]);
+}
+
 function cellaSalva_(d, utente) {
   if (!dataValida_(d.data)) throw new Error('Data non valida');
   var m = militareDa_(d.militare_id);
-  if (!mappa_(leggi_('Codici'), 'codice')[d.codice]) throw new Error('Codice sconosciuto');
+  var cod = mappa_(leggi_('Codici'), 'codice')[d.codice];
+  if (!cod) throw new Error('Codice sconosciuto');
   if (d.al && !codicePerdeForza_(d.codice)) {
     // stesso codice fino alla data indicata
     periodo_({ militari: [m.id], codice: d.codice, localita: d.localita, note: d.note, dal: d.data, al: d.al,
       escludiFestivi: d.escludiFestivi, sostituisci: d.sostituisci }, utente);
     return impieghiCella_(m.id, d.data);
   }
+  verificaGiorno_(cod, d.data);
   if (d.sostituisci || codicePerdeForza_(d.codice)) {
     eliminaImpieghi_(function (i) { return i.militare_id === m.id && i.data === d.data && i.codice !== d.codice; });
   }
@@ -208,6 +249,7 @@ function cellaSalva_(d, utente) {
   }
   registra_(d.data + ' ' + nomeMil_(m) + ': ' + d.codice + (campi.localita ? ' ' + campi.localita : ''));
   if (codicePerdeForza_(d.codice)) perditaForza_(militareDa_(m.id), d.data, d.codice);
+  if (vero_(cod.rc_dopo)) aggiungiSmonto_(m, d.data, d.codice, utente);
   return impieghiCella_(m.id, d.data);
 }
 
@@ -235,8 +277,12 @@ function periodo_(d, utente) {
   if (giorniTra_(d.dal, d.al) > 366) throw new Error('Periodo troppo lungo (massimo un anno)');
   if (!d.militari || !d.militari.length) throw new Error('Scegliere almeno un militare');
   var militari = d.militari.map(militareDa_);
+  var cod = mappa_(leggi_('Codici'), 'codice')[d.codice];
+  if (!cod) throw new Error('Codice sconosciuto');
   var giorni = [];
-  for (var g = d.dal; g <= d.al; g = aggiungiGiorni_(g, 1)) if (!(d.escludiFestivi && festivo_(g))) giorni.push(g);
+  for (var g = d.dal; g <= d.al; g = aggiungiGiorni_(g, 1)) {
+    if (!(d.escludiFestivi && festivo_(g)) && giornoAmmesso_(cod.giorni, g)) giorni.push(g);
+  }
   var chiavi = {};
   militari.forEach(function (m) { giorni.forEach(function (g) { if (inForza_(m, g)) chiavi[m.id + '|' + g] = true; }); });
   eliminaImpieghi_(function (i) {
@@ -250,6 +296,11 @@ function periodo_(d, utente) {
       modificato_da: utente.email, modificato_il: quando };
   });
   aggiungi_('Impieghi', nuovi);
+  if (vero_(cod.rc_dopo)) {
+    nuovi.forEach(function (n) {
+      if (!chiavi[n.militare_id + '|' + aggiungiGiorni_(n.data, 1)]) aggiungiSmonto_(militareDa_(n.militare_id), n.data, d.codice, utente);
+    });
+  }
   registra_('Periodo ' + d.dal + ' / ' + d.al + ' ' + d.codice + ' a ' +
     militari.map(function (m) { return m.cognome; }).join(', ') + ' (' + nuovi.length + ' giorni)');
   return nuovi.length;
@@ -489,7 +540,7 @@ function configSalva_(d) {
   if (doppio) throw new Error('Esiste gia\' "' + valore + '"');
   var es = d.originale ? righe.filter(function (r) { return r[chiave] === d.originale; })[0] : null;
   var rec = es || {};
-  TABELLE[tab].forEach(function (c) { if (o[c] !== undefined) rec[c] = String(o[c]).trim(); });
+  TABELLE[tab].forEach(function (c) { if (o[c] !== undefined) rec[c] = Array.isArray(o[c]) ? o[c].join('') : String(o[c]).trim(); });
   rec[chiave] = valore;
   if (es) aggiorna_(tab, rec); else aggiungi_(tab, [rec]);
   // rinomina a cascata

@@ -135,7 +135,7 @@ function avvio() {
     UTENTE = r.utente; LIVELLO = LIVELLI[UTENTE.ruolo] || 0;
     impostaConfig(r.config);
     document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>';
-    var voci = [['situazione', 'Situazione'], ['ruolino', 'Ruolino'], ['militari', 'Militari'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
+    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Ruolino'], ['militari', 'Militari'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
     voci.push(['config', 'Configurazione']);
     if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
     if (puo('Operatore')) voci.push(['registro', 'Registro']);
@@ -183,7 +183,7 @@ function vistaSituazione(data) {
     Object.keys(r.assenti).forEach(function (k) { nAss += r.assenti[k].length; });
     Object.keys(r.fuori).forEach(function (k) { nFuo += r.fuori[k].length; });
     var giorni = ['domenica', "lunedi'", "martedi'", "mercoledi'", "giovedi'", "venerdi'", 'sabato'];
-    var h = '<div class="intestazione"><h1>Situazione della forza - ' + giorni[giornoSett(data)] + ' ' + it(data) + '</h1>'
+    var h = '<div class="intestazione"><h1>Dati della forza - ' + giorni[giornoSett(data)] + ' ' + it(data) + '</h1>'
       + '<div class="naviga"><a class="bottone" href="#situazione/' + piuGiorni(data, -1) + '">&larr;</a>'
       + '<input type="date" value="' + data + '" onchange="location.hash=\'situazione/\'+this.value">'
       + '<a class="bottone" href="#situazione/' + piuGiorni(data, 1) + '">&rarr;</a><a class="bottone" href="#situazione/' + oggi() + '">Oggi</a></div></div>'
@@ -191,12 +191,17 @@ function vistaSituazione(data) {
       + '<div class="numero verde"><span>' + r.presenti.length + '</span>Presenti in sede</div>'
       + '<div class="numero giallo"><span>' + r.servizio.length + '</span>Di servizio</div>'
       + '<div class="numero blu"><span>' + nFuo + '</span>Fuori sede</div>'
-      + '<div class="numero rosso"><span>' + nAss + '</span>Assenti</div></div>'
+      + '<div class="numero rosso"><span>' + nAss + '</span>Assenti</div>'
+      + (r.festivo ? '<div class="numero"><span>' + r.liberi.length + '</span>Liberi dal servizio</div>' : '') + '</div>'
+      + (r.festivo ? '<p class="avviso">Giorno festivo: in sede conta solo chi ha un servizio o un\'attivita\' inserita.</p>' : '')
       + '<div class="colonne"><section class="riquadro"><h2>Assenti</h2>' + elenco(r.assenti) + '</section>'
       + '<section class="riquadro"><h2>Fuori sede</h2>' + elenco(r.fuori) + '</section>'
       + '<section class="riquadro"><h2>Presenti in sede</h2><ul>' + (r.presenti.map(function (m) {
         return '<li><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a> ' + m.impieghi.map(function (i) { return etichetta(i.codice, i.localita); }).join(' ') + '</li>';
-      }).join('') || '<li class="vuoto">Nessuno.</li>') + '</ul></section></div>'
+      }).join('') || '<li class="vuoto">Nessuno.</li>') + '</ul></section>'
+      + (r.festivo ? '<section class="riquadro"><h2>Liberi dal servizio</h2><ul>' + (r.liberi.map(function (m) {
+        return '<li><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a></li>'; }).join('') || '<li class="vuoto">Nessuno.</li>') + '</ul></section>' : '')
+      + '</div>'
       + '<section class="riquadro"><h2>Scadenze <a class="piccolo" href="#scadenze">vedi tutte</a></h2>'
       + (r.mancanti ? '<p class="avviso">' + r.mancanti + ' scadenze obbligatorie non ancora registrate.</p>' : '')
       + '<table class="tabella"><tr><th>Militare</th><th>Tipo</th><th>Scadenza</th><th>Stato</th></tr>'
@@ -278,12 +283,21 @@ function aggiornaTotali() {
     var n = 0;
     RU.mil.forEach(function (m) {
       if (!inForzaIl(m, g.data)) return;
-      var lista = RU.celle[m.id + '|' + g.data] || [];
+      var lista = (RU.celle[m.id + '|' + g.data] || []).filter(function (i) { return i.c !== 'NOTA'; });
+      if (g.festivo && !lista.length) return; // festivi: in sede solo chi ha un servizio o un'attivita'
       if (lista.every(function (i) { return si(codice(i.c).presente_in_sede); })) n++;
     });
     var td = document.querySelector('td[data-tot="' + g.data + '"]');
     if (td) td.textContent = n;
   });
+}
+
+/** dopo un servizio con smonto (guardie) aggiorna anche la casella del giorno successivo */
+function aggiornaSmonto(mId, data, cod) {
+  if (!si(codice(cod).rc_dopo)) return;
+  var dopo = piuGiorni(data, 1);
+  if (!RU.giorni.some(function (g) { return g.data === dopo; })) return;
+  api('cella', { militare_id: mId, data: dopo }, true).then(function (l) { sostituisciCella(mId, dopo, l); });
 }
 
 function sostituisciCella(mId, data, lista) {
@@ -308,11 +322,16 @@ function applicaPennello(td) {
   if (!tipo || td.dataset.inCorso) return;
   td.dataset.inCorso = '1'; td.style.opacity = '0.5';
   var base = { militare_id: td.dataset.m, data: td.dataset.d };
-  var p = tipo === '__cancella' ? api('cellaElimina', base, true)
+  var p = tipo === '__cancella' ? api('cellaElimina', base, true).then(function (l) {
+      var dopo = piuGiorni(base.data, 1);
+      if (RU.giorni.some(function (g) { return g.data === dopo; })) api('cella', { militare_id: base.militare_id, data: dopo }, true).then(function (l2) { sostituisciCella(base.militare_id, dopo, l2); });
+      return l;
+    })
     : api('cellaSalva', Object.assign(base, { codice: tipo, localita: document.getElementById('pn-loc').value, sostituisci: document.getElementById('pn-sost').checked }), true);
   p.then(function (lista) {
     if (tipo !== '__cancella' && si(codice(tipo).perde_forza)) { document.getElementById('pn-tipo').value = ''; avviso('Non piu\' in forza da quel giorno'); ricarica(); return; }
     sostituisciCella(base.militare_id, base.data, lista);
+    if (tipo !== '__cancella') aggiornaSmonto(base.militare_id, base.data, tipo);
   },
     function () { td.style.opacity = ''; delete td.dataset.inCorso; });
 }
@@ -373,7 +392,7 @@ function dialogoCella(mId, data) {
       return api('cellaSalva', d).then(function (l) {
         if (d.al || perde) {
           chiudiDialogo(); avviso(perde ? nomeMil(m) + ': non e\' piu\' in forza dal ' + it(data) : 'Periodo inserito'); ricarica();
-        } else { sostituisciCella(mId, data, l); dialogoCella(mId, data); }
+        } else { sostituisciCella(mId, data, l); aggiornaSmonto(mId, data, d.codice); dialogoCella(mId, data); }
       });
     });
   });
@@ -643,7 +662,8 @@ function vistaConfig(tab) {
   CONFIG_ATTIVA = tab;
   if (tab === 'Codici') {
     h += '<tr>' + ct + '<th>Codice</th><th>Descrizione</th><th>Categoria</th><th>Presente in sede</th><th>Scala da</th><th>Attivo</th><th></th></tr>' + CFG.codici.map(function (k) {
-      return '<tr class="' + (si(k.attivo) ? '' : 'spento') + '">' + cs(k.codice) + '<td>' + etichetta(k.codice) + (si(k.perde_forza) ? ' <small title="fa perdere la forza">⇥ perde la forza</small>' : '') + '</td><td>' + esc(k.descrizione) + '</td><td>' + esc(CATEGORIE[k.categoria] || k.categoria) + '</td><td>' + (si(k.presente_in_sede) ? "si'" : 'no') + '</td><td>'
+      return '<tr class="' + (si(k.attivo) ? '' : 'spento') + '">' + cs(k.codice) + '<td>' + etichetta(k.codice) + (si(k.perde_forza) ? ' <small title="fa perdere la forza">⇥ perde la forza</small>' : '')
+        + (si(k.rc_dopo) ? ' <small>+ RC il giorno dopo</small>' : '') + (k.giorni ? ' <small>(' + String(k.giorni).split('').map(function (g) { return ['', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'][g]; }).join(', ') + ')</small>' : '') + '</td><td>' + esc(k.descrizione) + '</td><td>' + esc(CATEGORIE[k.categoria] || k.categoria) + '</td><td>' + (si(k.presente_in_sede) ? "si'" : 'no') + '</td><td>'
         + (k.contatore ? esc(k.contatore) + ' (' + (si(k.scala_orario) ? 'secondo orario' : num(k.quantita_giorno) + '/giorno') + ')' : '') + '</td><td>' + (si(k.attivo) ? "si'" : 'no') + '</td><td>' + mod(k.codice) + '</td></tr>';
     }).join('');
   } else if (tab === 'TipiScadenza') {
@@ -676,6 +696,8 @@ function dialogoConfig(tab, valore) {
       { n: 'colore_sfondo', l: 'Colore sfondo', t: 'color', v: o.colore_sfondo || '#FFFFFF' },
       { n: 'colore_testo', l: 'Colore testo', t: 'color', v: o.colore_testo || '#000000' },
       { n: 'presente_in_sede', l: 'Conta come presente in sede', t: 'checkbox', v: valore ? o.presente_in_sede : 'SI' },
+      { n: 'rc_dopo', l: 'Servizio con smonto: il giorno dopo mette RC in automatico (es. guardie)', t: 'checkbox', v: o.rc_dopo },
+      { n: 'giorni', l: 'Giorni in cui si puo\' inserire (nessuno selezionato = tutti)', t: 'multi', o: [['1', 'Lunedi\''], ['2', 'Martedi\''], ['3', 'Mercoledi\''], ['4', 'Giovedi\''], ['5', 'Venerdi\''], ['6', 'Sabato'], ['7', 'Domenica']], v: String(o.giorni || '').split(''), aiuto: 'Tenere premuto CTRL per selezionarne piu\' di uno. Es. GUARDIA B: da martedi\' a sabato.' },
       { n: 'perde_forza', l: "Fa perdere la forza (congedo, trasferimento): dal giorno inserito il militare non e' piu' in forza", t: 'checkbox', v: o.perde_forza },
       { n: 'contatore', l: 'Scala dal contatore', t: 'select', o: [['', '— nessuno —']].concat(CFG.contatori.map(function (c) { return c.nome; })), v: o.contatore },
       { n: 'quantita_giorno', l: "Quantita' per giorno", t: 'number', v: o.quantita_giorno || 1 },

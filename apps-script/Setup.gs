@@ -35,8 +35,8 @@ var CONTATORI_INIZIALI = [['Licenza ordinaria', 'GG'], ["Festivita' soppresse", 
 
 // codice, descrizione, categoria, sfondo, testo, presente in sede, contatore
 var CODICI_INIZIALI = [
-  ['GUARDIA A', 'Guardia A', 'SER', '#FFFF00', '#000000', 'SI', ''],
-  ['GUARDIA B', 'Guardia B', 'SER', '#FFFF00', '#000000', 'SI', ''],
+  ['GUARDIA A', 'Guardia A (lun-dom, il giorno dopo RC)', 'SER', '#FFFF00', '#000000', 'SI', ''],
+  ['GUARDIA B', 'Guardia B (mar-sab, il giorno dopo RC)', 'SER', '#FFFF00', '#000000', 'SI', ''],
   ['GUARDIA B (4)', 'Guardia B - quarto uomo', 'SER', '#FFFF00', '#000000', 'SI', ''],
   ['Udp', 'Ufficiale/Sottufficiale di picchetto', 'SER', '#FFFF00', '#000000', 'SI', ''],
   ['Gdg', 'Graduato di giornata', 'SER', '#FFFF00', '#000000', 'SI', ''],
@@ -110,7 +110,8 @@ function setup() {
       var ore = c[6] === 'Ore di recupero';
       return { codice: c[0], descrizione: c[1], categoria: c[2], colore_sfondo: c[3], colore_testo: c[4],
         presente_in_sede: c[5], contatore: c[6], quantita_giorno: 1, scala_orario: ore ? 'SI' : 'NO',
-        ordine: (i + 1) * 10, attivo: 'SI', perde_forza: c[0] === 'CONGEDO' ? 'SI' : 'NO' };
+        ordine: (i + 1) * 10, attivo: 'SI', perde_forza: c[0] === 'CONGEDO' ? 'SI' : 'NO',
+        rc_dopo: c[0] === 'GUARDIA A' || c[0] === 'GUARDIA B' ? 'SI' : 'NO', giorni: c[0] === 'GUARDIA B' ? '23456' : '' };
     }));
   }
   if (!leggi_('TipiScadenza').length) {

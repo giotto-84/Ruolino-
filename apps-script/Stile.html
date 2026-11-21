@@ -145,4 +145,35 @@ dialog form { display: block; }
 .campo select[multiple] { min-height: 200px; }
 .link-doc { font-size: 12px; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--primario-chiaro); color: var(--primario); font-size: 12px; font-weight: 600; }
+/* --- telefono e schermi piccoli --- */
+@media (max-width: 760px) {
+  main { padding: 10px; }
+  h1 { font-size: 18px; margin: 2px 0 8px; }
+  .barra { gap: 8px; padding: 0 8px; flex-wrap: nowrap; }
+  .barra .logo { font-size: 13px; letter-spacing: 1px; padding: 10px 0; }
+  .barra nav { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .barra nav::-webkit-scrollbar { display: none; }
+  .barra nav a { padding: 10px 8px; white-space: nowrap; font-size: 14px; }
+  .barra .utente span:first-child { display: none; }
+  .intestazione { margin-bottom: 6px; }
+  .naviga { gap: 4px; }
+  .naviga .bottone, .naviga select, .naviga input { padding: 4px 8px; font-size: 13px; }
+  .pennello { padding: 6px; gap: 6px; font-size: 13px; }
+  .pennello .aiuto, .pennello strong { display: none; }
+  .pennello select { flex: 1 1 100%; }
+  .pennello input { flex: 1; min-width: 0; }
+  /* griglia: solo il cognome resta fisso a sinistra, cosi' si vedono i giorni */
+  .contenitore-griglia { max-height: 78vh; }
+  .griglia .c1, .griglia .c2 { display: none; }
+  .griglia .c3 { left: 0; min-width: 0; width: 96px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+  .griglia thead th { min-width: 46px; }
+  .griglia td.cella { min-width: 46px; max-width: 56px; height: 34px; font-size: 10px; }
+  .riepilogo { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .numero { padding: 6px 8px; font-size: 12px; }
+  .numero span { font-size: 22px; }
+  .tabella th, .tabella td { padding: 4px 5px; font-size: 13px; }
+  .contenitore-griglia .tabella { font-size: 12px; }
+  dialog { padding: 14px; width: 96vw; max-height: 90vh; }
+  #avvisi { left: 10px; right: 10px; }
+}
 </style>

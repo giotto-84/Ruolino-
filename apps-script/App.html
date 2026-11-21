@@ -257,6 +257,10 @@ function vistaRuolino(anno, mese) {
     RU.mil = mil;
     aggiornaTotali();
     collegaGriglia();
+    // porta in vista il giorno di oggi (utile soprattutto sul telefono)
+    var thOggi = document.querySelector('#griglia thead th.oggi'), cont = document.querySelector('.contenitore-griglia'), c3 = document.querySelector('#griglia thead th.c3');
+    var inizio = thOggi && (thOggi.previousElementSibling && !thOggi.previousElementSibling.classList.contains('c3') ? thOggi.previousElementSibling : thOggi);
+    if (inizio && cont) cont.scrollLeft = Math.max(0, inizio.offsetLeft - (c3 ? c3.offsetWidth : 0));
   });
 }
 

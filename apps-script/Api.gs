@@ -438,6 +438,60 @@ function spettanzaSalva_(d) {
   registra_('Spettanza ' + d.contatore + ' ' + a + ' ' + nomeMil_(m) + ': ' + d.quantita);
 }
 
+/** Salva molte spettanze in una volta: voci = [{militare_id, contatore, anno, quantita}] (quantita vuota = elimina). */
+function spettanzeSalva_(d) {
+  var voci = d.voci || [];
+  if (!voci.length) throw new Error('Nessuna spettanza da salvare');
+  var contatori = mappa_(leggi_('Contatori'), 'nome'), militari = mappa_(leggi_('Militari'), 'id');
+  var righe = leggi_('Spettanze'), indice = {};
+  righe.forEach(function (s, i) { indice[s.militare_id + '|' + s.contatore + '|' + s.anno] = i; });
+  var cambiate = 0, tolte = {};
+  voci.forEach(function (v) {
+    var a = String(v.anno);
+    if (!militari[v.militare_id]) throw new Error('Militare non trovato');
+    if (!contatori[v.contatore]) throw new Error('Contatore sconosciuto: ' + v.contatore);
+    if (!/^\d{4}$/.test(a)) throw new Error('Anno non valido: ' + a);
+    var k = v.militare_id + '|' + v.contatore + '|' + a, q = String(v.quantita === undefined ? '' : v.quantita).trim();
+    if (q === '') { if (indice[k] !== undefined) { tolte[indice[k]] = true; cambiate++; } return; }
+    if (numero_(q) === null) throw new Error('Quantita\' non valida per ' + nomeMil_(militari[v.militare_id]) + ': ' + q);
+    if (indice[k] !== undefined) { righe[indice[k]].quantita = numero_(q); delete tolte[indice[k]]; }
+    else { righe.push({ id: nuovoId_() + righe.length, militare_id: v.militare_id, contatore: v.contatore, anno: a, quantita: numero_(q), note: '' }); indice[k] = righe.length - 1; }
+    cambiate++;
+  });
+  riscrivi_('Spettanze', righe.filter(function (x, i) { return !tolte[i]; }));
+  registra_('Spettanze modificate in blocco: ' + cambiate);
+  return cambiate;
+}
+
+/** Riepilogo pluriennale di un contatore: per militare e anno spettante, goduto, residuo; piu' il residuo totale. */
+function licenzeRiepilogo_(d) {
+  var cont = mappa_(leggi_('Contatori'), 'nome')[d.contatore];
+  if (!cont) throw new Error('Contatore sconosciuto');
+  var codici = mappa_(leggi_('Codici'), 'codice'), orario = configurazione_().orario;
+  var annoCorrente = Number(d.oggi ? String(d.oggi).slice(0, 4) : new Date().getFullYear());
+  var spett = {}, goduto = {}, anni = {};
+  anni[annoCorrente] = true;
+  leggi_('Spettanze').forEach(function (s) {
+    if (s.contatore !== cont.nome) return;
+    spett[s.militare_id + '|' + s.anno] = numero_(s.quantita); anni[s.anno] = true;
+  });
+  leggi_('Impieghi').forEach(function (i) {
+    var c = codici[i.codice];
+    if (!c || c.contatore !== cont.nome) return;
+    var a = i.data.slice(0, 4), k = i.militare_id + '|' + a;
+    goduto[k] = (goduto[k] || 0) + quantitaScalata_(i, c, orario); anni[a] = true;
+  });
+  leggi_('Movimenti').forEach(function (mv) {
+    if (mv.contatore !== cont.nome) return;
+    var k = mv.militare_id + '|' + mv.anno;
+    goduto[k] = (goduto[k] || 0) + (numero_(mv.quantita) || 0); anni[mv.anno] = true;
+  });
+  var elenco = Object.keys(anni).map(Number).filter(function (a) { return a >= 2000 && a <= annoCorrente + 1; }).sort();
+  var dal = elenco[0] + '-01-01', al = elenco[elenco.length - 1] + '-12-31';
+  var militari = militariOrdinati_().filter(function (m) { return inForza_(m, dal, al) || d.anchePersi; });
+  return { contatore: cont, anni: elenco, militari: militari, spettanze: spett, goduto: goduto };
+}
+
 function movimentoSalva_(d) {
   var m = militareDa_(d.militare_id);
   if (numero_(d.quantita) === null) throw new Error('Quantita\' non valida');
@@ -647,6 +701,8 @@ var AZIONI = {
   militareElimina: { ruolo: 'Amministratore', fn: militareElimina_ },
   licenze: { ruolo: 'Consultazione', fn: licenze_ },
   spettanzaSalva: { ruolo: 'Operatore', fn: spettanzaSalva_ },
+  spettanzeSalva: { ruolo: 'Operatore', fn: spettanzeSalva_ },
+  licenzeRiepilogo: { ruolo: 'Consultazione', fn: licenzeRiepilogo_ },
   movimentoSalva: { ruolo: 'Operatore', fn: movimentoSalva_ },
   movimentoElimina: { ruolo: 'Operatore', fn: movimentoElimina_ },
   scadenze: { ruolo: 'Consultazione', fn: scadenze_ },

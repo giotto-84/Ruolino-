@@ -573,22 +573,105 @@ function eliminaMovimenti(ids) {
   if (ids.length && confirm('Eliminare ' + ids.length + ' movimenti?')) api('movimentoElimina', { ids: ids }).then(function () { ricarica(); });
 }
 
-function vistaLicenze(anno) {
+var LIC = null; // stato della pagina licenze
+
+function schedeLicenze(attiva) {
+  return '<div class="schede"><a class="' + (attiva === 'anno' ? 'attiva' : '') + '" href="#licenze">Anno</a>'
+    + '<a class="' + (attiva === 'riepilogo' ? 'attiva' : '') + '" href="#licenze/riepilogo">Riepilogo anni</a></div>';
+}
+
+function vistaLicenze(anno, contatore) {
+  if (anno === 'riepilogo') return vistaRiepilogoLicenze(contatore);
   anno = Number(anno) || Number(oggi().slice(0, 4));
+  var modifica = sessionStorage.getItem('licModifica') === '1';
   api('licenze', { anno: anno }).then(function (r) {
     var cont = CFG.contatori.filter(function (c) { return si(c.attivo); }), mod = puo('Operatore');
-    var h = '<div class="intestazione"><h1>Licenze e recuperi ' + anno + '</h1><div class="naviga"><a class="bottone" href="#licenze/' + (anno - 1) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="#licenze/' + (anno + 1) + '">' + (anno + 1) + ' &rarr;</a></div></div>'
-      + '<p class="aiuto">Spettante = valore inserito per ogni militare (clic per modificarlo). Goduto = giorni del ruolino con codici collegati al contatore + movimenti manuali. RC e RC FEST scalano le ore secondo l\'orario di lavoro.</p>'
-      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze"><tr><th rowspan="2">Militare</th>' + cont.map(function (c) { return '<th colspan="3">' + esc(c.nome) + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')</th>'; }).join('') + '</tr><tr>'
+    LIC = { anno: anno, r: r, cont: cont };
+    if (!mod) modifica = false;
+    var h = schedeLicenze('anno')
+      + '<div class="intestazione"><h1>Licenze e recuperi ' + anno + '</h1><div class="naviga"><a class="bottone" href="#licenze/' + (anno - 1) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="#licenze/' + (anno + 1) + '">' + (anno + 1) + ' &rarr;</a>'
+      + (mod ? (modifica
+        ? '<button class="bottone primario" onclick="salvaTabellaSpettanze()">Salva modifiche</button><button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'0\');ricarica()">Annulla</button>'
+        : '<button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'1\');ricarica()">Modifica tabella</button>'
+          + bottoneSel('lic', 'Imposta spettanza ai selezionati', 'dialogoSpettanzaMultipla')) : '')
+      + '</div></div>'
+      + '<p class="aiuto">' + (modifica ? 'Scrivi le spettanze nelle caselle (vuoto = nessuna spettanza) e premi <strong>Salva modifiche</strong>.'
+        : 'Spettante = valore inserito per ogni militare. Goduto = giorni del ruolino con codici collegati al contatore + movimenti manuali. RC e RC FEST scalano le ore secondo l\'orario di lavoro. Seleziona piu\' militari per assegnare la stessa spettanza a tutti.') + '</p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze"><tr>' + (mod && !modifica ? '<th rowspan="2">' + selTutti('lic') + '</th>' : '') + '<th rowspan="2">Militare</th>'
+      + cont.map(function (c) { return '<th colspan="3">' + esc(c.nome) + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')</th>'; }).join('') + '</tr><tr>'
       + cont.map(function () { return '<th>Spett.</th><th>Goduto</th><th>Residuo</th>'; }).join('') + '</tr>'
       + r.militari.map(function (m) {
-        return '<tr><td><a href="#militare/' + esc(m.id) + '/' + anno + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + cont.map(function (c) {
+        return '<tr>' + (mod && !modifica ? '<td>' + sel('lic', m.id) + '</td>' : '') + '<td><a href="#militare/' + esc(m.id) + '/' + anno + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + cont.map(function (c) {
           var k = m.id + '|' + c.nome, sp = r.spettanze[k], go = r.goduto[k] || 0, res = (sp || 0) - go;
-          var spH = sp === undefined || sp === null ? '<span class="vuoto">imposta</span>' : num(sp);
-          return '<td>' + (mod ? '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(c.nome) + ',' + anno + ',' + J((sp === undefined || sp === null ? '' : sp)) + ')">' + spH + '</button>' : spH)
-            + '</td><td>' + num(go) + '</td><td class="' + (res < 0 ? 'negativo' : '') + '"><strong>' + num(res) + '</strong></td>';
+          var vuota = sp === undefined || sp === null;
+          var cella;
+          if (modifica) cella = '<input class="inp-spett" type="number" step="any" data-m="' + esc(m.id) + '" data-c="' + esc(c.nome) + '" data-orig="' + (vuota ? '' : sp) + '" value="' + (vuota ? '' : sp) + '">';
+          else if (mod) cella = '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(c.nome) + ',' + anno + ',' + J(vuota ? '' : sp) + ')">' + (vuota ? '<span class="vuoto">imposta</span>' : num(sp)) + '</button>';
+          else cella = vuota ? '' : num(sp);
+          return '<td>' + cella + '</td><td>' + num(go) + '</td><td class="' + (res < 0 ? 'negativo' : '') + '"><strong>' + num(res) + '</strong></td>';
         }).join('') + '</tr>';
       }).join('') + '</table></div>';
+    main(h);
+  });
+}
+
+function salvaTabellaSpettanze() {
+  var voci = Array.prototype.filter.call(document.querySelectorAll('input.inp-spett'), function (i) { return i.value.trim() !== i.dataset.orig; })
+    .map(function (i) { return { militare_id: i.dataset.m, contatore: i.dataset.c, anno: LIC.anno, quantita: i.value.trim() }; });
+  if (!voci.length) { avviso('Nessuna modifica da salvare'); sessionStorage.setItem('licModifica', '0'); ricarica(); return; }
+  api('spettanzeSalva', { voci: voci }).then(function (n) { avviso('Salvate ' + n + ' spettanze'); sessionStorage.setItem('licModifica', '0'); ricarica(); });
+}
+
+function dialogoSpettanzaMultipla(ids) {
+  if (!ids.length) return;
+  apriDialogo(modulo('Spettanza per ' + ids.length + ' militari', [
+    { n: 'contatore', l: 'Contatore', t: 'select', o: LIC.cont.map(function (c) { return [c.nome, c.nome + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')']; }) },
+    { n: 'anno', l: 'Anno', t: 'number', v: LIC.anno, req: true },
+    { n: 'quantita', l: "Quantita' spettante", t: 'number', aiuto: 'Lasciare vuoto per togliere la spettanza ai militari selezionati.' }
+  ]));
+  alSalva(function (d) {
+    var voci = ids.map(function (id) { return { militare_id: id, contatore: d.contatore, anno: d.anno, quantita: d.quantita }; });
+    return api('spettanzeSalva', { voci: voci }).then(function (n) { chiudiDialogo(); avviso('Aggiornate ' + n + ' spettanze'); ricarica(); });
+  });
+}
+
+function vistaRiepilogoLicenze(contatore) {
+  var cont = CFG.contatori.filter(function (c) { return si(c.attivo); });
+  contatore = decodeURIComponent(contatore || '') || (cont[0] && cont[0].nome);
+  var anchePersi = sessionStorage.getItem('riepPersi') === '1';
+  api('licenzeRiepilogo', { contatore: contatore, oggi: oggi(), anchePersi: anchePersi }).then(function (r) {
+    var mod = puo('Operatore'), unita = r.contatore.unita === 'ORE' ? 'ore' : 'giorni';
+    var tot = { anni: {}, totale: 0 };
+    var h = schedeLicenze('riepilogo')
+      + '<div class="intestazione"><h1>Riepilogo ' + esc(r.contatore.nome) + ' (' + unita + ')</h1><div class="naviga">'
+      + '<select onchange="location.hash=\'licenze/riepilogo/\'+encodeURIComponent(this.value)">' + opzioni(cont.map(function (c) { return c.nome; }), r.contatore.nome) + '</select>'
+      + '<label class="check"><input type="checkbox"' + (anchePersi ? ' checked' : '') + ' onchange="sessionStorage.setItem(\'riepPersi\',this.checked?\'1\':\'0\');ricarica()"> anche persi dalla forza</label>'
+      + '</div></div>'
+      + '<p class="aiuto">Per ogni anno: <strong>residuo</strong> = spettante - goduto (passa il mouse o tocca il numero per il dettaglio). '
+      + '<strong>Residuo totale</strong> = somma dei residui di tutti gli anni. ' + (mod ? 'Clicca su un anno per inserire o correggere la spettanza di quell\'anno, anche per gli anni passati.' : '') + '</p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze riep-anni"><tr><th>Militare</th>'
+      + r.anni.map(function (a) { return '<th>' + a + '</th>'; }).join('') + '<th>Residuo totale</th></tr>'
+      + r.militari.map(function (m) {
+        var somma = 0;
+        var celle = r.anni.map(function (a) {
+          var k = m.id + '|' + a, sp = r.spettanze[k], go = r.goduto[k] || 0;
+          var vuota = sp === undefined || sp === null;
+          if (vuota && !go) {
+            return '<td>' + (mod ? '<button class="link vuoto" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(r.contatore.nome) + ',' + a + ',\'\')">+</button>' : '') + '</td>';
+          }
+          var res = (sp || 0) - go;
+          somma += res; tot.anni[a] = (tot.anni[a] || 0) + res;
+          var titolo = 'Spettante ' + (vuota ? '-' : num(sp)) + ' / goduto ' + num(go);
+          var testo = '<strong>' + num(res) + '</strong><br><small>' + (vuota ? '–' : num(sp)) + ' - ' + num(go) + '</small>';
+          return '<td class="' + (res < 0 ? 'negativo' : '') + '" title="' + esc(titolo) + '">'
+            + (mod ? '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(r.contatore.nome) + ',' + a + ',' + J(vuota ? '' : sp) + ')">' + testo + '</button>' : testo) + '</td>';
+        }).join('');
+        tot.totale += somma;
+        return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '"><td><a href="#militare/' + esc(m.id) + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + celle
+          + '<td class="' + (somma < 0 ? 'negativo' : '') + '"><strong>' + num(somma) + '</strong></td></tr>';
+      }).join('')
+      + '<tr class="totali"><th>Totale reparto</th>' + r.anni.map(function (a) { return '<th>' + num(tot.anni[a] || 0) + '</th>'; }).join('') + '<th>' + num(tot.totale) + '</th></tr>'
+      + '</table></div>';
     main(h);
   });
 }

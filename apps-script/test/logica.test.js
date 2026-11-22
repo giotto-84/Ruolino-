@@ -89,3 +89,12 @@ test('giorni ammessi (guardia B mar-sab)', () => {
   assert.ok(!L.giornoAmmesso_('23456', '2026-11-23')); // lunedi
   assert.ok(L.giornoAmmesso_('', '2026-11-29'));
 });
+
+test('RC di smonto dopo la guardia non scala ore', () => {
+  const orario = { lun: 8, mar: 8, mer: 8, gio: 8, ven: 4, sab: 0, dom: 0, festivi_zero: 'SI' };
+  const rc = { codice: 'RC', scala_orario: 'SI' };
+  assert.strictEqual(L.quantitaScalata_({ data: '2026-12-17' }, rc, orario, true), 0); // giovedi dopo guardia
+  assert.strictEqual(L.quantitaScalata_({ data: '2026-12-17', note: 'Smonto GUARDIA A del 16/12/2026' }, rc, orario), 0);
+  assert.strictEqual(L.quantitaScalata_({ data: '2026-12-17' }, rc, orario, false), 8); // RC normale
+  assert.strictEqual(L.quantitaScalata_({ data: '2026-12-17', quantita: '3' }, rc, orario, true), 3); // ore indicate a mano
+});

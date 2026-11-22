@@ -108,10 +108,15 @@ function oreDelGiorno_(orario, s) {
   return numero_(orario[chiavi[parseData_(s).getUTCDay()]]) || 0;
 }
 
-/** Quantita' scalata da un impiego verso il contatore del suo codice. */
-function quantitaScalata_(impiego, codice, orario) {
+/**
+ * Quantita' scalata da un impiego verso il contatore del suo codice.
+ * dopoServizio = true se il giorno prima c'era un servizio con smonto (guardia):
+ * l'RC di smonto non scala ore.
+ */
+function quantitaScalata_(impiego, codice, orario, dopoServizio) {
   var q = numero_(impiego.quantita);
   if (q !== null) return q;
+  if (codice.codice === 'RC' && (dopoServizio || /^Smonto /.test(String(impiego.note || '')))) return 0;
   if (vero_(codice.scala_orario)) return oreDelGiorno_(orario, impiego.data);
   var qg = numero_(codice.quantita_giorno);
   return qg === null ? 1 : qg;

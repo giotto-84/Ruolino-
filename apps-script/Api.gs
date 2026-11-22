@@ -36,6 +36,12 @@ function api(azione, dati) {
   var f = AZIONI[azione];
   if (!f) return { errore: 'Azione sconosciuta: ' + azione };
   dati = dati || {};
+  var token = dati._token;
+  delete dati._token;
+  if (!f.libera && !sessioneValida_(token, utente.email)) {
+    return { errore: 'Inserisci la password per accedere.', login: true };
+  }
+  dati._token = token;
   var scrittura = f.ruolo !== 'Consultazione';
   var lock = null;
   try {
@@ -51,6 +57,94 @@ function api(azione, dati) {
   } finally {
     if (lock) lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Accesso con password (oltre all'account Google)
+// ---------------------------------------------------------------------------
+var DURATA_SESSIONE = 6 * 60 * 60; // secondi (massimo consentito dalla cache di Google)
+var TENTATIVI_MAX = 5, BLOCCO_SECONDI = 15 * 60;
+
+function cifraPassword_(password, sale) {
+  var d = sale + '|' + password;
+  for (var i = 0; i < 300; i++) {
+    d = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, d, Utilities.Charset.UTF_8));
+  }
+  return d;
+}
+
+function controllaRequisiti_(password) {
+  password = String(password || '');
+  if (password.length < 8) throw new Error('La password deve avere almeno 8 caratteri.');
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) throw new Error('La password deve contenere lettere e numeri.');
+}
+
+function nuovaSessione_(email) {
+  var token = Utilities.getUuid() + Utilities.getUuid();
+  CacheService.getScriptCache().put('sess_' + token, email, DURATA_SESSIONE);
+  return token;
+}
+
+function sessioneValida_(token, email) {
+  if (!token) return false;
+  return CacheService.getScriptCache().get('sess_' + token) === email;
+}
+
+function statoLogin_(d, utente) {
+  return { email: utente.email, nome: utente.nome, haPassword: !!utente.password, attiva: sessioneValida_(d._token, utente.email) };
+}
+
+function login_(d, utente) {
+  var cache = CacheService.getScriptCache(), chiave = 'tent_' + utente.email;
+  var tentativi = Number(cache.get(chiave) || 0);
+  if (tentativi >= TENTATIVI_MAX) throw new Error('Troppi tentativi sbagliati: accesso bloccato per 15 minuti.');
+  if (!utente.password) throw new Error('Devi prima creare la tua password.');
+  if (cifraPassword_(String(d.password || ''), utente.sale) !== utente.password) {
+    cache.put(chiave, String(tentativi + 1), BLOCCO_SECONDI);
+    registra_('Accesso: password errata (' + (tentativi + 1) + ')');
+    throw new Error('Password errata' + (tentativi + 1 >= TENTATIVI_MAX ? ': accesso bloccato per 15 minuti.' : ' (tentativo ' + (tentativi + 1) + ' di ' + TENTATIVI_MAX + ').'));
+  }
+  cache.remove(chiave);
+  return { token: nuovaSessione_(utente.email) };
+}
+
+function salvaPassword_(utente, password) {
+  controllaRequisiti_(password);
+  var u = leggi_('Utenti').filter(function (x) { return x.email.toLowerCase() === utente.email.toLowerCase(); })[0];
+  u.sale = Utilities.getUuid();
+  u.password = cifraPassword_(String(password), u.sale);
+  aggiorna_('Utenti', u);
+}
+
+/** Primo accesso: l'utente crea la propria password. */
+function creaPassword_(d, utente) {
+  if (utente.password) throw new Error('La password esiste gia\': usa "Cambia password".');
+  salvaPassword_(utente, d.password);
+  registra_('Password creata');
+  return { token: nuovaSessione_(utente.email) };
+}
+
+function cambiaPassword_(d, utente) {
+  if (cifraPassword_(String(d.vecchia || ''), utente.sale) !== utente.password) throw new Error('La password attuale non e\' corretta.');
+  salvaPassword_(utente, d.password);
+  registra_('Password cambiata');
+}
+
+function logout_(d) {
+  if (d._token) CacheService.getScriptCache().remove('sess_' + d._token);
+}
+
+/** L'amministratore azzera la password: al prossimo accesso l'utente ne crea una nuova. */
+function azzeraPassword_(d) {
+  var emails = elenco_(d, 'email').map(function (e) { return e.toLowerCase(); });
+  var righe = leggi_('Utenti');
+  righe.forEach(function (u) { if (emails.indexOf(u.email.toLowerCase()) >= 0) { u.password = ''; u.sale = ''; aggiorna_('Utenti', u); } });
+  registra_('Password azzerata: ' + emails.join(', '));
+  return emails.length;
+}
+
+function utentePubblico_(u) {
+  return { email: u.email, nome: u.nome, ruolo: u.ruolo, haPassword: !!u.password };
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +310,8 @@ function aggiungiSmonto_(m, data, codice, utente) {
   eliminaImpieghi_(function (i) { return i.militare_id === m.id && i.data === dopo && i.codice !== 'RC'; });
   var quando = Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd HH:mm');
   var es = leggi_('Impieghi').filter(function (i) { return i.militare_id === m.id && i.data === dopo && i.codice === 'RC'; })[0];
-  if (es) { es.note = nota; es.modificato_da = utente.email; es.modificato_il = quando; aggiorna_('Impieghi', es); }
-  else aggiungi_('Impieghi', [{ id: nuovoId_(), militare_id: m.id, data: dopo, codice: 'RC', localita: '', quantita: '',
+  if (es) { es.note = nota; es.quantita = '0'; es.modificato_da = utente.email; es.modificato_il = quando; aggiorna_('Impieghi', es); }
+  else aggiungi_('Impieghi', [{ id: nuovoId_(), militare_id: m.id, data: dopo, codice: 'RC', localita: '', quantita: '0',
     note: nota, modificato_da: utente.email, modificato_il: quando }]);
 }
 
@@ -358,10 +452,22 @@ function militareElimina_(d) {
   return militari.length;
 }
 
+/** Giorni con un servizio che prevede smonto (guardie): chiave militare|data. */
+function giorniServizio_() {
+  var rc = {}, out = {};
+  leggi_('Codici').forEach(function (c) { if (vero_(c.rc_dopo)) rc[c.codice] = true; });
+  leggi_('Impieghi').forEach(function (i) { if (rc[i.codice]) out[i.militare_id + '|' + i.data] = true; });
+  return out;
+}
+
+function scalato_(i, c, orario, servizi) {
+  return quantitaScalata_(i, c, orario, !!servizi[i.militare_id + '|' + aggiungiGiorni_(i.data, -1)]);
+}
+
 function situazioneContatori_(militareId, anno) {
   var codici = mappa_(leggi_('Codici'), 'codice');
   var orario = configurazione_().orario;
-  var a = String(anno), out = {};
+  var a = String(anno), out = {}, servizi = giorniServizio_();
   leggi_('Contatori').forEach(function (c) { out[c.nome] = { spettante: null, goduto: 0 }; });
   leggi_('Spettanze').forEach(function (s) {
     if (s.anno === a && out[s.contatore] && (!militareId || s.militare_id === militareId)) {
@@ -371,7 +477,7 @@ function situazioneContatori_(militareId, anno) {
   leggi_('Impieghi').forEach(function (i) {
     if (i.militare_id !== militareId || i.data.slice(0, 4) !== a) return;
     var c = codici[i.codice];
-    if (c && c.contatore && out[c.contatore]) out[c.contatore].goduto += quantitaScalata_(i, c, orario);
+    if (c && c.contatore && out[c.contatore]) out[c.contatore].goduto += scalato_(i, c, orario, servizi);
   });
   leggi_('Movimenti').forEach(function (mv) {
     if (mv.militare_id === militareId && mv.anno === a && out[mv.contatore]) out[mv.contatore].goduto += numero_(mv.quantita) || 0;
@@ -409,13 +515,13 @@ function licenze_(d) {
   var codici = mappa_(leggi_('Codici'), 'codice');
   var orario = configurazione_().orario;
   var militari = militariOrdinati_().filter(function (m) { return inForza_(m, a + '-01-01', a + '-12-31'); });
-  var spett = {}, goduto = {};
+  var spett = {}, goduto = {}, servizi = giorniServizio_();
   leggi_('Spettanze').forEach(function (s) { if (s.anno === a) spett[s.militare_id + '|' + s.contatore] = numero_(s.quantita); });
   leggi_('Impieghi').forEach(function (i) {
     var c = codici[i.codice];
     if (!c || !c.contatore || i.data.slice(0, 4) !== a) return;
     var k = i.militare_id + '|' + c.contatore;
-    goduto[k] = (goduto[k] || 0) + quantitaScalata_(i, c, orario);
+    goduto[k] = (goduto[k] || 0) + scalato_(i, c, orario, servizi);
   });
   leggi_('Movimenti').forEach(function (mv) {
     if (mv.anno !== a) return;
@@ -469,7 +575,7 @@ function licenzeRiepilogo_(d) {
   if (!cont) throw new Error('Contatore sconosciuto');
   var codici = mappa_(leggi_('Codici'), 'codice'), orario = configurazione_().orario;
   var annoCorrente = Number(d.oggi ? String(d.oggi).slice(0, 4) : new Date().getFullYear());
-  var spett = {}, goduto = {}, anni = {};
+  var spett = {}, goduto = {}, anni = {}, servizi = giorniServizio_();
   anni[annoCorrente] = true;
   leggi_('Spettanze').forEach(function (s) {
     if (s.contatore !== cont.nome) return;
@@ -479,7 +585,7 @@ function licenzeRiepilogo_(d) {
     var c = codici[i.codice];
     if (!c || c.contatore !== cont.nome) return;
     var a = i.data.slice(0, 4), k = i.militare_id + '|' + a;
-    goduto[k] = (goduto[k] || 0) + quantitaScalata_(i, c, orario); anni[a] = true;
+    goduto[k] = (goduto[k] || 0) + scalato_(i, c, orario, servizi); anni[a] = true;
   });
   leggi_('Movimenti').forEach(function (mv) {
     if (mv.contatore !== cont.nome) return;
@@ -687,7 +793,13 @@ function utenteElimina_(d) {
 // Elenco azioni
 // ---------------------------------------------------------------------------
 var AZIONI = {
-  avvio: { ruolo: 'Consultazione', fn: function (d, u) { return { utente: u, config: configurazione_() }; } },
+  statoLogin: { ruolo: 'Consultazione', libera: true, fn: statoLogin_ },
+  login: { ruolo: 'Consultazione', libera: true, fn: login_ },
+  creaPassword: { ruolo: 'Consultazione', libera: true, fn: creaPassword_ },
+  cambiaPassword: { ruolo: 'Consultazione', fn: cambiaPassword_ },
+  logout: { ruolo: 'Consultazione', fn: logout_ },
+  azzeraPassword: { ruolo: 'Amministratore', fn: azzeraPassword_ },
+  avvio: { ruolo: 'Consultazione', fn: function (d, u) { return { utente: utentePubblico_(u), config: configurazione_() }; } },
   situazione: { ruolo: 'Consultazione', fn: situazione_ },
   ruolino: { ruolo: 'Consultazione', fn: ruolino_ },
   cella: { ruolo: 'Consultazione', fn: function (d) { return impieghiCella_(d.militare_id, d.data); } },
@@ -714,7 +826,7 @@ var AZIONI = {
   importa: { ruolo: 'Amministratore', fn: function (d) { return importaBrogliaccio_(d); } },
   esporta: { ruolo: 'Consultazione', fn: function (d) { return esportaRuolino_(d.anno, d.mese); } },
   backupOra: { ruolo: 'Amministratore', fn: function () { return backupGiornaliero(); } },
-  utenti: { ruolo: 'Amministratore', fn: function () { return leggi_('Utenti'); } },
+  utenti: { ruolo: 'Amministratore', fn: function () { return leggi_('Utenti').map(utentePubblico_); } },
   utenteSalva: { ruolo: 'Amministratore', fn: utenteSalva_ },
   utenteElimina: { ruolo: 'Amministratore', fn: utenteElimina_ },
   registro: { ruolo: 'Operatore', fn: function () { return leggi_('Registro').slice(-500).reverse(); } }

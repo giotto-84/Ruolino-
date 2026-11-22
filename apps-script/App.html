@@ -38,27 +38,34 @@ function selTutti(gruppo) { return '<input type="checkbox" title="seleziona tutt
 function selezionaTutti(gruppo, v) { document.querySelectorAll('input.sel[data-g="' + gruppo + '"]').forEach(function (c) { c.checked = v; }); contaSel(gruppo); }
 function selezionati(gruppo) { return Array.prototype.map.call(document.querySelectorAll('input.sel[data-g="' + gruppo + '"]:checked'), function (c) { return c.value; }); }
 function contaSel(gruppo) {
-  var n = selezionati(gruppo).length, b = document.getElementById('elimina-' + gruppo);
-  if (b) { b.hidden = !n; b.textContent = b.dataset.testo + ' (' + n + ')'; }
+  var n = selezionati(gruppo).length;
+  document.querySelectorAll('button[data-gsel="' + gruppo + '"]').forEach(function (b) { b.hidden = !n; b.textContent = b.dataset.testo + ' (' + n + ')'; });
 }
-function bottoneSel(gruppo, testo, funzione) {
-  return '<button type="button" class="bottone pericolo" hidden id="elimina-' + gruppo + '" data-testo="' + esc(testo) + '" onclick="' + funzione + '(selezionati(\'' + gruppo + '\'))">' + esc(testo) + '</button>';
+function bottoneSel(gruppo, testo, funzione, suffisso) {
+  return '<button type="button" class="bottone pericolo" hidden id="elimina-' + gruppo + (suffisso || '') + '" data-gsel="' + gruppo + '" data-testo="' + esc(testo) + '" onclick="' + funzione + '(selezionati(\'' + gruppo + '\'))">' + esc(testo) + '</button>';
 }
 function nomeMil(m) { return (m.grado + ' ' + m.cognome + ' ' + m.nome).trim(); }
 
+var TOKEN = '';
+try { TOKEN = sessionStorage.getItem('ruolinoToken') || ''; } catch (e) { TOKEN = ''; }
+function salvaToken(t) { TOKEN = t || ''; try { if (t) sessionStorage.setItem('ruolinoToken', t); else sessionStorage.removeItem('ruolinoToken'); } catch (e) { /* niente */ } }
+
 function api(azione, dati, silenzioso) {
   if (!silenzioso) document.getElementById('attesa').hidden = false;
+  dati = dati || {};
+  dati._token = TOKEN;
   return new Promise(function (ok, ko) {
     google.script.run
       .withSuccessHandler(function (r) {
         document.getElementById('attesa').hidden = true;
+        if (r && r.login) { salvaToken(''); mostraLogin(); ko(new Error(r.errore)); return; }
         if (r && r.errore) { avviso(r.errore, true); ko(new Error(r.errore)); } else ok(r ? r.ok : null);
       })
       .withFailureHandler(function (e) {
         document.getElementById('attesa').hidden = true;
         avviso('Errore: ' + (e && e.message ? e.message : e), true); ko(e);
       })
-      .api(azione, dati || {});
+      .api(azione, dati);
   });
 }
 
@@ -131,17 +138,64 @@ function alSalva(fn) {
 
 // ---------------------------------------------------------------- avvio e navigazione
 function avvio() {
+  api('statoLogin').then(function (st) {
+    if (st.attiva) entra(); else mostraLogin(st);
+  });
+}
+
+function mostraLogin(st) {
+  document.getElementById('menu').innerHTML = '';
+  document.getElementById('utente').innerHTML = '';
+  chiudiDialogo();
+  var disegna = function (st) {
+    var crea = !st.haPassword;
+    main('<div class="riquadro login"><h1>Ruolino - accesso</h1><p class="aiuto">Account: <strong>' + esc(st.email) + '</strong></p>'
+      + (crea ? '<p>Primo accesso: crea la tua password personale (almeno 8 caratteri, con lettere e numeri).</p>' : '')
+      + '<form id="form-login" onsubmit="return false"><label>Password<input type="password" id="pw1" autocomplete="' + (crea ? 'new-password' : 'current-password') + '" autofocus></label>'
+      + (crea ? '<label>Ripeti la password<input type="password" id="pw2" autocomplete="new-password"></label>' : '')
+      + '<button class="primario" id="btn-login">' + (crea ? 'Crea password ed entra' : 'Accedi') + '</button></form>'
+      + (crea ? '' : '<p class="aiuto">Password dimenticata? Chiedi all\'amministratore di azzerarla dalla pagina Utenti.</p>') + '</div>');
+    document.getElementById('btn-login').onclick = function () {
+      var pw = document.getElementById('pw1').value;
+      if (crea && pw !== document.getElementById('pw2').value) { avviso('Le due password non coincidono', true); return; }
+      api(crea ? 'creaPassword' : 'login', { password: pw }).then(function (r) { salvaToken(r.token); entra(); },
+        function () { document.getElementById('pw1').value = ''; });
+    };
+    var pw1 = document.getElementById('pw1'); if (pw1) pw1.focus();
+  };
+  if (st) disegna(st); else api('statoLogin', {}, true).then(disegna);
+}
+
+function esci() {
+  api('logout', {}, true).then(function () { salvaToken(''); mostraLogin(); }, function () { salvaToken(''); mostraLogin(); });
+}
+
+function dialogoCambiaPassword() {
+  apriDialogo(modulo('Cambia password', [
+    { n: 'vecchia', l: 'Password attuale', t: 'password', req: true },
+    { n: 'password', l: 'Nuova password', t: 'password', req: true, aiuto: 'Almeno 8 caratteri, con lettere e numeri.' },
+    { n: 'conferma', l: 'Ripeti la nuova password', t: 'password', req: true }
+  ]));
+  alSalva(function (d) {
+    if (d.password !== d.conferma) { avviso('Le due password non coincidono', true); return; }
+    return api('cambiaPassword', { vecchia: d.vecchia, password: d.password }).then(function () { chiudiDialogo(); avviso('Password cambiata'); });
+  });
+}
+
+var MENU_COLLEGATO = false;
+function entra() {
   api('avvio').then(function (r) {
     UTENTE = r.utente; LIVELLO = LIVELLI[UTENTE.ruolo] || 0;
     impostaConfig(r.config);
-    document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>';
+    document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>'
+      + ' <button class="link" onclick="dialogoCambiaPassword()" title="Cambia password">🔑</button> <button class="link" onclick="esci()">Esci</button>';
     var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Ruolino'], ['militari', 'Militari'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
     voci.push(['config', 'Configurazione']);
     if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
     if (puo('Operatore')) voci.push(['registro', 'Registro']);
     document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '">' + v[1] + '</a>'; }).join('')
       + (CFG.cartellaUrl ? '<a href="' + esc(CFG.cartellaUrl) + '" target="_blank" title="Cartella dei file su Google Drive">Drive ↗</a>' : '');
-    window.addEventListener('hashchange', instrada);
+    if (!MENU_COLLEGATO) { window.addEventListener('hashchange', instrada); MENU_COLLEGATO = true; }
     instrada();
   });
 }
@@ -854,11 +908,12 @@ function vistaImporta() {
 // ---------------------------------------------------------------- utenti e registro
 function vistaUtenti() {
   api('utenti').then(function (lista) {
-    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
+    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Azzera password', 'azzeraPassword', '-pw') + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
       + '<p class="aiuto">Aggiungendo un utente, il Foglio dati e la cartella Drive vengono condivisi automaticamente con il suo account Google: '
       + 'in modifica per Amministratori e Operatori, in sola lettura per Consultazione. Rimuovendolo, la condivisione viene tolta.</p>'
-      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Email</th><th>Nome</th><th>Ruolo</th><th></th></tr>' + lista.map(function (u) {
-        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
+      + '<p class="aiuto">Ognuno crea la propria password al primo accesso. Se qualcuno la dimentica, selezionalo e premi "Azzera password": al prossimo accesso ne creera\' una nuova.</p>'
+      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Email</th><th>Nome</th><th>Ruolo</th><th>Password</th><th></th></tr>' + lista.map(function (u) {
+        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td>' + (u.haPassword ? 'impostata' : '<span class="vuoto">da creare al primo accesso</span>') + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
           + '</td></tr>';
       }).join('') + '</table>');
   });
@@ -872,6 +927,10 @@ function dialogoUtente(u) {
   ]));
   if (u.email) document.querySelector('#modulo [name=email]').readOnly = true;
   alSalva(function (d) { return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato e file condivisi'); ricarica(); }); });
+}
+function azzeraPassword(emails) {
+  if (emails.length && confirm('Azzerare la password di ' + emails.join(', ') + '? Al prossimo accesso dovranno crearne una nuova.'))
+    api('azzeraPassword', { emails: emails }).then(function () { avviso('Password azzerate'); ricarica(); });
 }
 function eliminaUtenti(emails) {
   if (emails.length && confirm('Rimuovere ' + emails.join(', ') + ' e togliere la condivisione dei file?')) api('utenteElimina', { emails: emails }).then(function () { ricarica(); });

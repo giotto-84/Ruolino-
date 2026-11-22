@@ -20,7 +20,7 @@ var TABELLE = {
     'documento_nome', 'documento_url', 'documento_id'],
   Gradi: ['sigla', 'descrizione', 'ordine'],
   Impostazioni: ['chiave', 'valore'],
-  Utenti: ['email', 'nome', 'ruolo'],
+  Utenti: ['email', 'nome', 'ruolo', 'password', 'sale'],
   Registro: ['quando', 'utente', 'azione']
 };
 

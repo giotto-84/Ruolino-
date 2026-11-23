@@ -38,6 +38,7 @@ function api(azione, dati) {
   dati = dati || {};
   var token = dati._token;
   delete dati._token;
+  try { migrazioni_(); } catch (e) { /* utente in sola lettura */ }
   if (!f.libera && !sessioneValida_(token, utente.email)) {
     return { errore: 'Inserisci la password per accedere.', login: true };
   }
@@ -56,6 +57,20 @@ function api(azione, dati) {
     return { errore: e && e.message ? e.message : String(e) };
   } finally {
     if (lock) lock.releaseLock();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Aggiornamenti dei dati dopo un cambio di versione (eseguiti una volta sola)
+// ---------------------------------------------------------------------------
+function migrazioni_() {
+  var imp = impostazioni_();
+  if (imp.migr_udp_gdg !== 'SI') {
+    // Udp e Gdg come le guardie: il giorno dopo RC di smonto, senza ore
+    leggi_('Codici').forEach(function (c) {
+      if ((c.codice === 'Udp' || c.codice === 'Gdg') && !vero_(c.rc_dopo)) { c.rc_dopo = 'SI'; aggiorna_('Codici', c); }
+    });
+    salvaImpostazioni_({ migr_udp_gdg: 'SI' });
   }
 }
 

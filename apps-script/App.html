@@ -189,7 +189,7 @@ function entra() {
     impostaConfig(r.config);
     document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>'
       + ' <button class="link" onclick="dialogoCambiaPassword()" title="Cambia password">🔑</button> <button class="link" onclick="esci()">Esci</button>';
-    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Ruolino'], ['militari', 'Militari'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
+    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
     voci.push(['config', 'Configurazione']);
     if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
     if (puo('Operatore')) voci.push(['registro', 'Registro']);
@@ -280,7 +280,7 @@ function vistaRuolino(anno, mese) {
     var mil = r.militari.filter(function (m) { return filtro === 'tutti' || m.stato === filtro; });
     var prec = mese === 1 ? [anno - 1, 12] : [anno, mese - 1], succ = mese === 12 ? [anno + 1, 1] : [anno, mese + 1];
     var mod = puo('Operatore'), oggiS = oggi();
-    var h = '<div class="intestazione"><h1>Ruolino ' + MESI[mese] + ' ' + anno + '</h1><div class="naviga">'
+    var h = '<div class="intestazione"><h1>Brogliaccio ' + MESI[mese] + ' ' + anno + '</h1><div class="naviga">'
       + '<a class="bottone" href="#ruolino/' + prec[0] + '/' + prec[1] + '">&larr;</a><a class="bottone" href="#ruolino">Mese corrente</a>'
       + '<a class="bottone" href="#ruolino/' + succ[0] + '/' + succ[1] + '">&rarr;</a>'
       + '<select onchange="sessionStorage.setItem(\'filtroRuolino\',this.value);ricarica()">' + opzioni([['tutti', 'Tutti'], ['EFF', 'Solo effettivi'], ['EXT', 'Solo extra']], filtro) + '</select>'
@@ -515,7 +515,7 @@ var MIL_CACHE = [];
 function vistaMilitari() {
   api('militari').then(function (lista) {
     MIL_CACHE = lista;
-    main('<div class="intestazione"><h1>Militari</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico" oninput="filtraMilitari()">'
+    main('<div class="intestazione"><h1>Elenco personale</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico" oninput="filtraMilitari()">'
       + '<label class="check"><input type="checkbox" id="persi" onchange="filtraMilitari()"> mostra persi dalla forza</label>'
       + (puo('Amministratore') ? bottoneSel('mil', 'Elimina selezionati', 'eliminaMilitari') : '')
       + (puo('Operatore') ? '<button class="bottone primario" onclick="dialogoMilitare()">+ Nuovo militare</button>' : '') + '</div></div>'
@@ -546,8 +546,8 @@ function dialogoMilitare(id) {
     { n: 'telefono', l: 'Telefono', v: m.telefono },
     { n: 'stato', l: 'Stato', t: 'select', o: Object.keys(STATI_MIL).map(function (k) { return [k, STATI_MIL[k]]; }), v: m.stato },
     { n: 'data_ingresso', l: 'In forza dal', t: 'date', v: m.data_ingresso },
-    { n: 'data_uscita', l: 'Perso dalla forza il', t: 'date', v: m.data_uscita, aiuto: "Ultimo giorno in forza: dopo questa data non compare piu' nel ruolino." },
-    { n: 'ordine', l: 'Posizione nel ruolino', t: 'number', v: m.ordine, aiuto: 'Vuoto = ordine per grado e cognome.' },
+    { n: 'data_uscita', l: 'Perso dalla forza il', t: 'date', v: m.data_uscita, aiuto: "Ultimo giorno in forza: dopo questa data non compare piu' nel brogliaccio." },
+    { n: 'ordine', l: 'Posizione nel brogliaccio', t: 'number', v: m.ordine, aiuto: 'Vuoto = ordine per grado e cognome.' },
     { n: 'note', l: 'Note', t: 'textarea', v: m.note }
   ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
     + (id && puo('Amministratore') ? ' <button type="button" class="pericolo" onclick="eliminaMilitari([' + J(id) + '])">Elimina</button>' : '')));
@@ -559,7 +559,7 @@ function dialogoMilitare(id) {
 
 function eliminaMilitari(ids) {
   if (!ids.length) return;
-  if (!confirm('Eliminare definitivamente ' + (ids.length > 1 ? ids.length + ' militari' : 'il militare') + ' con ruolino, licenze e scadenze?\nPer chi va in congedo o viene trasferito conviene usare il codice CONGEDO o la data "perso dalla forza".')) return;
+  if (!confirm('Eliminare definitivamente ' + (ids.length > 1 ? ids.length + ' militari' : 'il militare') + ' con brogliaccio, licenze e scadenze?\nPer chi va in congedo o viene trasferito conviene usare il codice CONGEDO o la data "perso dalla forza".')) return;
   api('militareElimina', { ids: ids }).then(function (n) { chiudiDialogo(); avviso('Eliminati ' + n + ' militari'); MIL_CACHE = []; if (location.hash === '#militari') ricarica(); else location.hash = 'militari'; });
 }
 
@@ -650,7 +650,7 @@ function vistaLicenze(anno, contatore) {
           + bottoneSel('lic', 'Imposta spettanza ai selezionati', 'dialogoSpettanzaMultipla')) : '')
       + '</div></div>'
       + '<p class="aiuto">' + (modifica ? 'Scrivi le spettanze nelle caselle (vuoto = nessuna spettanza) e premi <strong>Salva modifiche</strong>.'
-        : 'Spettante = valore inserito per ogni militare. Goduto = giorni del ruolino con codici collegati al contatore + movimenti manuali. RC e RC FEST scalano le ore secondo l\'orario di lavoro. Seleziona piu\' militari per assegnare la stessa spettanza a tutti.') + '</p>'
+        : 'Spettante = valore inserito per ogni militare. Goduto = giorni del brogliaccio con codici collegati al contatore + movimenti manuali. RC e RC FEST scalano le ore secondo l\'orario di lavoro. Seleziona piu\' militari per assegnare la stessa spettanza a tutti.') + '</p>'
       + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze"><tr>' + (mod && !modifica ? '<th rowspan="2">' + selTutti('lic') + '</th>' : '') + '<th rowspan="2">Militare</th>'
       + cont.map(function (c) { return '<th colspan="3">' + esc(c.nome) + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')</th>'; }).join('') + '</tr><tr>'
       + cont.map(function () { return '<th>Spett.</th><th>Goduto</th><th>Residuo</th>'; }).join('') + '</tr>'
@@ -892,7 +892,7 @@ function vistaImporta() {
     { n: 'anno', l: 'Anno del brogliaccio', t: 'number', v: oggi().slice(0, 4), req: true },
     { n: 'foglio', l: 'Nome del foglio', v: 'BROGLIACCIO', req: true }
   ], '<button class="primario" id="salva">Importa</button>')
-    + '<p class="aiuto">Legge anagrafica e codici giornalieri. I militari gia\' presenti (stesso cognome e nome) vengono aggiornati; il ruolino del periodo contenuto nel file viene sostituito. Il file viene salvato su Drive nella cartella "Import".</p><div id="esito"></div></div>');
+    + '<p class="aiuto">Legge anagrafica e codici giornalieri. I militari gia\' presenti (stesso cognome e nome) vengono aggiornati; il brogliaccio del periodo contenuto nel file viene sostituito. Il file viene salvato su Drive nella cartella "Import".</p><div id="esito"></div></div>');
   alSalva(function (d) {
     return leggiFile(document.querySelector('#modulo [name=file]')).then(function (f) {
       if (!f) { avviso('Scegli un file', true); return; }
@@ -923,7 +923,7 @@ function dialogoUtente(u) {
   apriDialogo(modulo(u.email ? 'Modifica utente' : 'Nuovo utente', [
     { n: 'email', l: 'Email (account Google)', t: 'email', req: true, v: u.email },
     { n: 'nome', l: 'Nome da mostrare', v: u.nome },
-    { n: 'ruolo', l: 'Ruolo', t: 'select', o: [['Amministratore', 'Amministratore - tutto'], ['Operatore', 'Operatore - ruolino, anagrafica, licenze, scadenze'], ['Consultazione', 'Consultazione - sola lettura']], v: u.ruolo }
+    { n: 'ruolo', l: 'Ruolo', t: 'select', o: [['Amministratore', 'Amministratore - tutto'], ['Operatore', 'Operatore - brogliaccio, elenco personale, licenze, scadenze'], ['Consultazione', 'Consultazione - sola lettura']], v: u.ruolo }
   ]));
   if (u.email) document.querySelector('#modulo [name=email]').readOnly = true;
   alSalva(function (d) { return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato e file condivisi'); ricarica(); }); });

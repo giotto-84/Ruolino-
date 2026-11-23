@@ -139,7 +139,7 @@ function esportaRuolino_(anno, mese) {
   var giorni = dati.giorni;
   var celle = {};
   dati.impieghi.forEach(function (i) { (celle[i.m + '|' + i.d] = celle[i.m + '|' + i.d] || []).push(i); });
-  var titolo = 'Ruolino ' + MESI[mese] + ' ' + anno;
+  var titolo = 'Brogliaccio ' + MESI[mese] + ' ' + anno;
 
   var tmp = SpreadsheetApp.create(titolo);
   try {

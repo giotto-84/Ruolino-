@@ -193,11 +193,12 @@ function mappa_(arr, chiave) {
 function militariOrdinati_() {
   var gradi = mappa_(leggi_('Gradi'), 'sigla');
   var ordStato = { EFF: 0, EXT: 1, PER: 2 };
+  // ordine: stato (effettivi, extra, persi) -> grado (dal piu' alto) -> posizione indicata -> cognome
   return leggi_('Militari').slice().sort(function (a, b) {
     return (ordStato[a.stato] || 0) - (ordStato[b.stato] || 0) ||
-      (numero_(a.ordine) || 9999) - (numero_(b.ordine) || 9999) ||
       ((gradi[a.grado] && numero_(gradi[a.grado].ordine)) || 999) - ((gradi[b.grado] && numero_(gradi[b.grado].ordine)) || 999) ||
-      a.cognome.localeCompare(b.cognome);
+      (numero_(a.ordine) || 9999) - (numero_(b.ordine) || 9999) ||
+      (a.cognome + ' ' + a.nome).localeCompare(b.cognome + ' ' + b.nome);
   });
 }
 

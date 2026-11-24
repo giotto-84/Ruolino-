@@ -547,7 +547,7 @@ function dialogoMilitare(id) {
     { n: 'stato', l: 'Stato', t: 'select', o: Object.keys(STATI_MIL).map(function (k) { return [k, STATI_MIL[k]]; }), v: m.stato },
     { n: 'data_ingresso', l: 'In forza dal', t: 'date', v: m.data_ingresso },
     { n: 'data_uscita', l: 'Perso dalla forza il', t: 'date', v: m.data_uscita, aiuto: "Ultimo giorno in forza: dopo questa data non compare piu' nel brogliaccio." },
-    { n: 'ordine', l: 'Posizione nel brogliaccio', t: 'number', v: m.ordine, aiuto: 'Vuoto = ordine per grado e cognome.' },
+    { n: 'ordine', l: 'Posizione tra i pari grado', t: 'number', v: m.ordine, aiuto: "L'elenco e' ordinato per grado; questo numero decide l'ordine tra militari dello stesso grado (vuoto = in fondo, in ordine alfabetico)." },
     { n: 'note', l: 'Note', t: 'textarea', v: m.note }
   ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
     + (id && puo('Amministratore') ? ' <button type="button" class="pericolo" onclick="eliminaMilitari([' + J(id) + '])">Elimina</button>' : '')));

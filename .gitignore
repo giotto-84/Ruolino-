@@ -23,6 +23,3 @@ env/
 .DS_Store
 Thumbs.db
 
-# Ambiente e pacchetti per installazione offline
-pacchetti/
-.venv/

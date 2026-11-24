@@ -1,1 +1,0 @@
-<td class="cella{% if c.fuori_forza %} fuori{% endif %}{% if c.festivo %} festivo{% endif %}" data-m="{{ c.militare_id }}" data-d="{{ c.data|date:'Y-m-d' }}"{% if c.sfondo %} style="background:{{ c.sfondo }};color:{{ c.colore }}"{% endif %}{% if c.titolo %} title="{{ c.titolo }}"{% endif %}>{{ c.testo }}{% if c.ha_note %}<span class="nota">●</span>{% endif %}</td>

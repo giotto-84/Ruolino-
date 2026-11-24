@@ -126,7 +126,9 @@ dl.dati dd { margin: 0; }
   .griglia td.cella { min-width: 0; height: auto; }
   .griglia .fisso, .griglia thead th { position: static; }
   td, th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  @page { size: A3 landscape; margin: 8mm; }
+  @page { size: A4 portrait; margin: 10mm; }
+  @page orizzontale { size: A3 landscape; margin: 8mm; }
+  body.largo main { page: orizzontale; }
 }
 @media (max-width: 700px) {
   .barra nav a { padding: 8px 6px; }
@@ -145,6 +147,23 @@ dialog form { display: block; }
 .campo select[multiple] { min-height: 200px; }
 .link-doc { font-size: 12px; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--primario-chiaro); color: var(--primario); font-size: 12px; font-weight: 600; }
+/* stampa e servizi */
+.solo-stampa { display: none; }
+.servizi td, .servizi th { white-space: nowrap; }
+.servizi tr.totali th { background: #e3ebe0; }
+@media print {
+  .solo-stampa { display: block; margin-top: 12px; }
+  .colonne h3 { display: block !important; }
+  .solo-stampa table { font-size: 11px; }
+  .riquadro { break-inside: avoid; border-color: #999; }
+  .colonne { display: block; }
+  .colonne .riquadro { margin-bottom: 8px; }
+  body { background: #fff; }
+  a { color: #000; text-decoration: none; }
+  .avviso, #avvisi, button, select, input { display: none !important; }
+  .riepilogo { grid-template-columns: repeat(6, 1fr); }
+  .contenitore-griglia { overflow: visible !important; }
+}
 /* licenze */
 .inp-spett { width: 70px; padding: 3px 5px; text-align: center; }
 .riep-anni td small { color: var(--tenue); font-size: 11px; }

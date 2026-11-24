@@ -142,7 +142,21 @@ function avvio() {
   if (TOKEN) entra(); else mostraLogin();
 }
 
+// uscita automatica dopo 30 minuti senza attivita' (controllata anche dal server)
+var INATTIVITA = 30 * 60, TIMER_INATTIVITA = null;
+function attivita() {
+  if (!TOKEN) return;
+  clearTimeout(TIMER_INATTIVITA);
+  TIMER_INATTIVITA = setTimeout(function () {
+    api('logout', {}, true).then(null, function () { /* niente */ });
+    salvaToken(''); mostraLogin();
+    avviso('Sei uscito automaticamente dopo ' + Math.round(INATTIVITA / 60) + ' minuti di inattivita\'.', true);
+  }, INATTIVITA * 1000);
+}
+['click', 'keydown', 'touchstart', 'scroll'].forEach(function (ev) { document.addEventListener(ev, attivita, { passive: true }); });
+
 function svuotaIntestazione() {
+  clearTimeout(TIMER_INATTIVITA);
   document.getElementById('menu').innerHTML = '';
   document.getElementById('utente').innerHTML = '';
   chiudiDialogo();
@@ -161,6 +175,7 @@ function mostraLogin() {
     if (!u || !pw) { avviso('Inserisci nome utente e password', true); return; }
     api('login', { utente: u, password: pw }).then(function (r) {
       salvaToken(r.token);
+      if (r.inattivita) INATTIVITA = r.inattivita;
       if (r.cambio) mostraCambio(); else entra();
     }, function () { document.getElementById('pw1').value = ''; });
   };
@@ -204,11 +219,12 @@ function dialogoCambiaPassword() {
 var MENU_COLLEGATO = false;
 function entra() {
   api('avvio').then(function (r) {
+    attivita();
     UTENTE = r.utente; LIVELLO = LIVELLI[UTENTE.ruolo] || 0;
     impostaConfig(r.config);
     document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>'
       + ' <button class="link" onclick="dialogoCambiaPassword()" title="Cambia password">🔑</button> <button class="link" onclick="esci()">Esci</button>';
-    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Licenze'], ['scadenze', 'Scadenze']];
+    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Licenze'], ['servizi', 'Servizi'], ['scadenze', 'Scadenze']];
     voci.push(['config', 'Configurazione']);
     if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
     if (puo('Operatore')) voci.push(['registro', 'Registro']);
@@ -231,9 +247,9 @@ function ricaricaConfig() { return api('avvio', {}, true).then(function (r) { im
 function instrada() {
   var p = (location.hash.replace(/^#/, '') || 'situazione').split('/');
   document.querySelectorAll('#menu a').forEach(function (a) { a.classList.toggle('attivo', a.dataset.r === p[0]); });
-  document.body.classList.toggle('largo', ['ruolino', 'scadenze', 'licenze'].indexOf(p[0]) >= 0);
+  document.body.classList.toggle('largo', ['ruolino', 'scadenze', 'licenze', 'servizi'].indexOf(p[0]) >= 0);
   var viste = { situazione: vistaSituazione, ruolino: vistaRuolino, militari: vistaMilitari, militare: vistaMilitare,
-    licenze: vistaLicenze, scadenze: vistaScadenze, config: vistaConfig, importa: vistaImporta, utenti: vistaUtenti, registro: vistaRegistro };
+    licenze: vistaLicenze, servizi: vistaServizi, scadenze: vistaScadenze, config: vistaConfig, importa: vistaImporta, utenti: vistaUtenti, registro: vistaRegistro };
   (viste[p[0]] || vistaSituazione).apply(null, p.slice(1));
 }
 function ricarica() { instrada(); }
@@ -259,7 +275,8 @@ function vistaSituazione(data) {
     var h = '<div class="intestazione"><h1>Dati della forza - ' + giorni[giornoSett(data)] + ' ' + it(data) + '</h1>'
       + '<div class="naviga"><a class="bottone" href="#situazione/' + piuGiorni(data, -1) + '">&larr;</a>'
       + '<input type="date" value="' + data + '" onchange="location.hash=\'situazione/\'+this.value">'
-      + '<a class="bottone" href="#situazione/' + piuGiorni(data, 1) + '">&rarr;</a><a class="bottone" href="#situazione/' + oggi() + '">Oggi</a></div></div>'
+      + '<a class="bottone" href="#situazione/' + piuGiorni(data, 1) + '">&rarr;</a><a class="bottone" href="#situazione/' + oggi() + '">Oggi</a>'
+      + '<button class="bottone primario" onclick="window.print()">Stampa</button></div></div>'
       + '<div class="riepilogo"><div class="numero"><span>' + r.forza + '</span>Forza</div>'
       + '<div class="numero verde"><span>' + r.presenti.length + '</span>Presenti in sede</div>'
       + '<div class="numero giallo"><span>' + r.servizio.length + '</span>Di servizio</div>'
@@ -281,7 +298,11 @@ function vistaSituazione(data) {
       + r.scadute.map(function (s) { return '<tr class="st-scaduta"><td>' + esc(s.militare) + '</td><td>' + esc(s.tipo) + '</td><td>' + it(s.data_scadenza) + '</td><td>SCADUTA</td></tr>'; }).join('')
       + r.inScadenza.map(function (s) { return '<tr class="st-in_scadenza"><td>' + esc(s.militare) + '</td><td>' + esc(s.tipo) + '</td><td>' + it(s.data_scadenza) + '</td><td>in scadenza</td></tr>'; }).join('')
       + (!r.scadute.length && !r.inScadenza.length ? '<tr><td colspan="4" class="vuoto">Nessuna scadenza imminente.</td></tr>' : '')
-      + '</table></section>';
+      + '</table></section>'
+      // foglio da stampare: un militare per riga
+      + '<section class="solo-stampa"><h2>Situazione nominativa</h2><table class="tabella"><tr><th>N.</th><th>Militare</th><th>Situazione</th><th>Dettaglio</th></tr>'
+      + r.elenco.map(function (e, k) { return '<tr><td>' + (k + 1) + '</td><td>' + esc(e.nome) + '</td><td>' + esc(e.stato) + '</td><td>' + esc(e.dettaglio) + '</td></tr>'; }).join('')
+      + '</table><p class="piccolo">Stampato il ' + it(oggi()) + ' da ' + esc(UTENTE.nome || UTENTE.email) + '</p></section>';
     main(h);
   });
 }
@@ -294,12 +315,13 @@ function vistaRuolino(anno, mese) {
   anno = Number(anno) || Number(o[0]); mese = Number(mese) || Number(o[1]);
   var filtro = sessionStorage.getItem('filtroRuolino') || 'tutti';
   api('ruolino', { anno: anno, mese: mese }).then(function (r) {
-    RU = { anno: anno, mese: mese, giorni: r.giorni, militari: r.militari, celle: {} };
+    RU = { anno: anno, mese: mese, giorni: r.giorni, militari: r.militari, celle: {}, archiviato: r.archiviato };
     r.impieghi.forEach(function (i) { (RU.celle[i.m + '|' + i.d] = RU.celle[i.m + '|' + i.d] || []).push(i); });
     var mil = r.militari.filter(function (m) { return filtro === 'tutti' || m.stato === filtro; });
     var prec = mese === 1 ? [anno - 1, 12] : [anno, mese - 1], succ = mese === 12 ? [anno + 1, 1] : [anno, mese + 1];
-    var mod = puo('Operatore'), oggiS = oggi();
-    var h = '<div class="intestazione"><h1>Brogliaccio ' + MESI[mese] + ' ' + anno + '</h1><div class="naviga">'
+    var mod = puo('Operatore') && !r.archiviato, oggiS = oggi();
+    var h = (r.archiviato ? '<p class="avviso">Anno ' + anno + ' archiviato: il brogliaccio si puo\' solo consultare.</p>' : '')
+      + '<div class="intestazione"><h1>Brogliaccio ' + MESI[mese] + ' ' + anno + '</h1><div class="naviga">'
       + '<a class="bottone" href="#ruolino/' + prec[0] + '/' + prec[1] + '">&larr;</a><a class="bottone" href="#ruolino">Mese corrente</a>'
       + '<a class="bottone" href="#ruolino/' + succ[0] + '/' + succ[1] + '">&rarr;</a>'
       + '<select onchange="sessionStorage.setItem(\'filtroRuolino\',this.value);ricarica()">' + opzioni([['tutti', 'Tutti'], ['EFF', 'Solo effettivi'], ['EXT', 'Solo extra']], filtro) + '</select>'
@@ -440,7 +462,7 @@ function dialogoCella(mId, data) {
   api('cella', { militare_id: mId, data: data }, true).then(function (lista) {
     RU.celle[mId + '|' + data] = lista;
     RU.dlg = { m: mId, d: data };
-    var mod = puo('Operatore');
+    var mod = puo('Operatore') && !RU.archiviato;
     var h = '<h2>' + esc(nomeMil(m)) + ' - ' + it(data) + '</h2><table class="tabella">'
       + (lista.length && mod ? '<tr><th>' + selTutti('voci') + '</th><th>Codice</th><th>Quantita\'</th><th>Note</th><th>Modificato</th></tr>' : '')
       + (lista.map(function (i) {
@@ -684,6 +706,7 @@ function vistaLicenze(anno, contatore) {
       + (mod ? (modifica
         ? '<button class="bottone primario" onclick="salvaTabellaSpettanze()">Salva modifiche</button><button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'0\');ricarica()">Annulla</button>'
         : '<button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'1\');ricarica()">Modifica tabella</button>'
+          + '<button class="bottone" onclick="copiaSpettanze(' + anno + ')">Copia spettanze dal ' + (anno - 1) + '</button>'
           + bottoneSel('lic', 'Imposta spettanza ai selezionati', 'dialogoSpettanzaMultipla')) : '')
       + '</div></div>'
       + '<p class="aiuto">' + (modifica ? 'Scrivi le spettanze nelle caselle (vuoto = nessuna spettanza) e premi <strong>Salva modifiche</strong>.'
@@ -704,6 +727,11 @@ function vistaLicenze(anno, contatore) {
       }).join('') + '</table></div>';
     main(h);
   });
+}
+
+function copiaSpettanze(anno) {
+  if (!confirm('Copiare le spettanze del ' + (anno - 1) + ' sul ' + anno + '?\nVengono copiate solo dove il ' + anno + ' non ha ancora un valore.')) return;
+  api('copiaSpettanze', { anno: anno }).then(function (n) { avviso('Copiate ' + n + ' spettanze'); ricarica(); });
 }
 
 function salvaTabellaSpettanze() {
@@ -767,6 +795,45 @@ function vistaRiepilogoLicenze(contatore) {
   });
 }
 
+// ---------------------------------------------------------------- servizi svolti
+function vistaServizi(anno, mese, categoria) {
+  var o = oggi().split('-');
+  anno = Number(anno) || Number(o[0]);
+  mese = mese === undefined ? Number(o[1]) : Number(mese); // 0 = tutto l'anno
+  categoria = categoria || 'SER';
+  var dal = anno + '-' + pad(mese || 1) + '-01';
+  var al = mese ? piuGiorni(mese === 12 ? (anno + 1) + '-01-01' : anno + '-' + pad(mese + 1) + '-01', -1) : anno + '-12-31';
+  api('servizi', { dal: dal, al: al, categoria: categoria }).then(function (r) {
+    var vai = function (a, m, c) { return '#servizi/' + a + '/' + m + '/' + c; };
+    var totali = {}, perCodice = {};
+    r.militari.forEach(function (m) {
+      totali[m.id] = 0;
+      r.codici.forEach(function (c) { var n = r.conta[m.id + '|' + c] || 0; totali[m.id] += n; perCodice[c] = (perCodice[c] || 0) + n; });
+    });
+    var eff = r.militari.filter(function (m) { return m.stato === 'EFF'; }).map(function (m) { return totali[m.id]; });
+    var min = eff.length ? Math.min.apply(null, eff) : 0, max = eff.length ? Math.max.apply(null, eff) : 0;
+    var tot = Object.keys(totali).reduce(function (a, k) { return a + totali[k]; }, 0);
+    var media = eff.length ? eff.reduce(function (a, b) { return a + b; }, 0) / eff.length : 0;
+    var h = '<div class="intestazione"><h1>Servizi ' + (mese ? MESI[mese] + ' ' : 'anno ') + anno + '</h1><div class="naviga">'
+      + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, 0, categoria), 'Tutto l\'anno']].concat(MESI.slice(1).map(function (n, k) { return [vai(anno, k + 1, categoria), n]; })), vai(anno, mese, categoria)) + '</select>'
+      + '<a class="bottone" href="' + vai(anno - 1, mese, categoria) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="' + vai(anno + 1, mese, categoria) + '">' + (anno + 1) + ' &rarr;</a>'
+      + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, mese, 'SER'), 'Servizi in sede (guardie, Udp, Gdg...)'], [vai(anno, mese, 'FUO'), 'Impieghi fuori sede'], [vai(anno, mese, 'ATT'), 'Attivita\' / visite'], [vai(anno, mese, 'ASS'), 'Assenze'], [vai(anno, mese, 'tutte'), 'Tutti i codici']], vai(anno, mese, categoria)) + '</select>'
+      + '<button class="bottone" onclick="window.print()">Stampa</button></div></div>'
+      + '<p class="aiuto">Numero di giorni per codice. Tra gli effettivi: media <strong>' + num(media) + '</strong>; in verde chi ne ha fatti di meno (' + min + '), in rosso chi ne ha fatti di piu\' (' + max + '). Utile per distribuire i turni in modo equo.</p>'
+      + (r.codici.length ? '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze servizi"><tr><th>Militare</th>'
+        + r.codici.map(function (c) { return '<th>' + etichetta(c) + '</th>'; }).join('') + '<th>Totale</th></tr>'
+        + r.militari.map(function (m) {
+          var t = totali[m.id], cls = m.stato === 'EFF' && max > min ? (t === min ? 'st-valida' : t === max ? 'st-scaduta' : '') : '';
+          return '<tr class="' + (m.stato === 'EFF' ? '' : 'spento') + '"><td><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a>' + (m.stato === 'EXT' ? ' <small>(extra)</small>' : '') + '</td>'
+            + r.codici.map(function (c) { var n = r.conta[m.id + '|' + c] || 0; return '<td>' + (n || '<span class="vuoto">-</span>') + '</td>'; }).join('')
+            + '<td class="' + cls + '"><strong>' + t + '</strong></td></tr>';
+        }).join('')
+        + '<tr class="totali"><th>Totale</th>' + r.codici.map(function (c) { return '<th>' + perCodice[c] + '</th>'; }).join('') + '<th>' + tot + '</th></tr></table></div>'
+        : '<p class="vuoto">Nessun codice di questo tipo nel periodo scelto.</p>');
+    main(h);
+  });
+}
+
 // ---------------------------------------------------------------- scadenze
 function vistaScadenze() {
   api('scadenze', { oggi: oggi() }).then(function (r) {
@@ -825,15 +892,17 @@ var CONFIG_TAB = {
   TipiScadenza: { titolo: 'Tipi di scadenza', chiave: 'nome', lista: function () { return CFG.tipiScadenza; } },
   Contatori: { titolo: 'Contatori licenze / recuperi', chiave: 'nome', lista: function () { return CFG.contatori; } },
   Gradi: { titolo: 'Gradi', chiave: 'sigla', lista: function () { return CFG.gradi; } },
-  Orario: { titolo: 'Orario di lavoro' }
+  Orario: { titolo: 'Orario di lavoro' },
+  Archivio: { titolo: 'Archivio anni' }
 };
 
 function vistaConfig(tab) {
   tab = CONFIG_TAB[tab] ? tab : 'Codici';
+  if (tab === 'Archivio') return vistaArchivio();
   var adm = puo('Amministratore'), def = CONFIG_TAB[tab];
   var h = '<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === tab ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
     + '<div class="intestazione"><h1>' + def.titolo + '</h1><div class="naviga">'
-    + (adm && tab !== 'Orario' ? bottoneSel('cfg', 'Elimina selezionati', 'eliminaConfigSel') + '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
+    + (adm && tab !== 'Orario' && tab !== 'Archivio' ? bottoneSel('cfg', 'Elimina selezionati', 'eliminaConfigSel') + '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
     + (adm ? '<button class="bottone" onclick="backupOra()">Backup ora</button>' : '') + '</div></div><table class="tabella">';
   var mod = function (v) { return adm ? '<button class="link" onclick="dialogoConfig(' + J(tab) + ',' + J(v) + ')">modifica</button>' : ''; };
   var cs = function (v) { return adm ? '<td>' + sel('cfg', v) + '</td>' : ''; }, ct = adm ? '<th>' + selTutti('cfg') + '</th>' : '';
@@ -863,6 +932,32 @@ function vistaConfig(tab) {
       + '<td>' + (si(o.festivi_zero) ? '0 h' : 'come il giorno') + '</td><td>' + (adm ? '<button class="link" onclick="dialogoOrario()">modifica</button>' : '') + '</td></tr>';
   }
   main(h + '</table>' + (tab === 'Orario' ? '<p class="aiuto">I codici con "scala secondo orario" (RC, RC FEST) scalano dalle Ore di recupero le ore previste per quel giorno.</p>' : ''));
+}
+
+function vistaArchivio() {
+  api('anniArchiviati').then(function (archiviati) {
+    var adm = puo('Amministratore'), corrente = Number(oggi().slice(0, 4));
+    var possibili = [];
+    for (var a = corrente - 1; a >= corrente - 10; a--) if (archiviati.indexOf(String(a)) < 0) possibili.push(String(a));
+    main('<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === 'Archivio' ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
+      + '<div class="riquadro modulo"><h1>Archivio anni</h1>'
+      + '<p>Archiviare un anno passato sposta il suo brogliaccio e il suo registro in un Foglio separato, "Ruolino - archivio AAAA", nella cartella del Ruolino. '
+      + 'L\'app resta veloce anche dopo anni di uso.</p><ul>'
+      + '<li>Il brogliaccio di quell\'anno <strong>resta consultabile</strong> dall\'app, ma non si puo\' piu\' modificare.</li>'
+      + '<li>Licenze e recuperi goduti in quell\'anno vengono conservati come movimenti riepilogativi: residui e riepilogo pluriennale non cambiano.</li>'
+      + '<li>Conviene archiviare a inizio anno l\'anno appena chiuso, dopo aver completato le correzioni.</li></ul>'
+      + '<p><strong>Anni archiviati:</strong> ' + (archiviati.length ? archiviati.sort().join(', ') : 'nessuno') + '</p>'
+      + (adm ? (possibili.length ? '<div class="naviga"><select id="anno-arch">' + opzioni(possibili, possibili[0]) + '</select><button class="bottone pericolo" onclick="archiviaAnno()">Archivia anno</button></div>' : '')
+        : '<p class="aiuto">Solo un amministratore puo\' archiviare.</p>')
+      + '</div>');
+  });
+}
+function archiviaAnno() {
+  var a = document.getElementById('anno-arch').value;
+  if (!confirm('Archiviare il ' + a + '? Il brogliaccio del ' + a + ' non sara\' piu\' modificabile.')) return;
+  api('archiviaAnno', { anno: a }).then(function (r) {
+    avviso('Archiviato ' + a + ': ' + r.giornate + ' giornate spostate in "' + r.nome + '"'); ricarica();
+  });
 }
 
 function dialogoConfig(tab, valore) {

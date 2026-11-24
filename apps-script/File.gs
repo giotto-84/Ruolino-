@@ -49,6 +49,7 @@ function importaValori_(valori, anno) {
   if (!cols.length) throw new Error('Non trovo le intestazioni dei mesi (riga 1) e dei giorni (riga 2).');
   var date = cols.map(function (c) { return colonne[c]; }).sort();
   var dal = date[0], al = date[date.length - 1];
+  verificaNonArchiviato_(dal); verificaNonArchiviato_(al);
 
   var interprete = creaInterprete_(leggi_('Codici').map(function (c) { return c.codice; }));
   var gradi = mappa_(leggi_('Gradi'), 'sigla');

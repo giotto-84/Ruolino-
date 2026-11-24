@@ -63,6 +63,11 @@ Si entra con **nome utente e password del Ruolino**, senza bisogno di un account
 * **Licenze**: inserisci a mano la spettanza di ogni persona. Il goduto viene calcolato dal ruolino.
   RC e RC FEST scalano le *Ore di recupero* secondo l'orario: lun-gio 8 ore, ven 4 ore, sabato, domenica e festivi 0
   (modificabile in *Configurazione → Orario di lavoro*).
+* **Servizi**: quante guardie, Udp e Gdg ha fatto ognuno nel mese o nell'anno, con chi ne ha fatti di meno in verde.
+* **Dati della forza → Stampa**: foglio A4 con riepilogo e situazione nominativa di tutto il personale.
+* **Licenze → Copia spettanze dall'anno precedente**: a gennaio riporta le spettanze dell'anno prima, solo dove mancano.
+* **Configurazione → Archivio anni**: sposta in un Foglio separato il brogliaccio di un anno chiuso. L'anno resta consultabile e i residui non cambiano.
+* Dopo **30 minuti di inattività** l'app chiude la sessione. Assegnare una nuova password chiude le sessioni aperte di quell'utente.
 * **Configurazione**: codici con colori, tipi di scadenza, contatori, gradi, orario, *Backup ora*.
 * **Password dimenticata:** l'amministratore seleziona l'utente in *Utenti* e preme **Nuova password provvisoria**.
 
@@ -76,5 +81,4 @@ Il link resta lo stesso.
 
 * Ogni modifica viene annotata nella pagina *Registro*. Il Foglio conserva comunque la propria cronologia delle versioni.
 * Il Foglio e la cartella restano privati: **non condividerli**. Chi avesse accesso al Foglio potrebbe modificare dati e programma.
-* La versione per la rete interna (cartella principale del repository) resta disponibile come alternativa offline.
 * Per provare la logica: `node --test apps-script/test/logica.test.js`.

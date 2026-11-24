@@ -52,6 +52,17 @@ function api(azione, dati) {
       sessione = leggiSessione_(token);
       utente = sessione && utenteDa_(sessione.u);
       if (!utente) return { errore: 'Sessione scaduta: accedi di nuovo.', login: true };
+      var cr = credenziali_(utente.email);
+      if (!cr || (cr.v || 0) !== (sessione.v || 0)) {
+        chiudiSessione_(token);
+        return { errore: 'La password e\' stata cambiata: accedi di nuovo.', login: true };
+      }
+      if (Date.now() - (sessione.t || 0) > INATTIVITA_MAX * 1000) {
+        chiudiSessione_(token);
+        return { errore: 'Sei rimasto inattivo troppo a lungo: accedi di nuovo.', login: true };
+      }
+      sessione.t = Date.now();
+      salvaSessione_(token, sessione);
       if (sessione.c && !f.anchePrimaDelCambio) return { errore: 'Devi prima cambiare la password.', cambio: true };
       _UTENTE_SESSIONE = utente.email;
     }
@@ -148,6 +159,7 @@ function rendiPrivato_() {
 var DURATA_SESSIONE = 6 * 60 * 60; // secondi (massimo consentito dalla cache di Google)
 var TENTATIVI_MAX = 5, BLOCCO_SECONDI = 15 * 60;
 var ITERAZIONI = 5000;
+var INATTIVITA_MAX = 30 * 60; // secondi senza attivita' prima dell'uscita automatica
 
 function cifraPassword_(password, sale, iterazioni) {
   var d = sale + '|' + password;
@@ -172,18 +184,30 @@ function credenziali_(nome) {
 function impostaCredenziali_(nome, password, cambio) {
   controllaRequisiti_(password);
   var sale = Utilities.getUuid();
+  // v cambia a ogni nuova password: le sessioni aperte con la password precedente vengono chiuse
   PropertiesService.getScriptProperties().setProperty('pw_' + String(nome).toLowerCase(),
-    JSON.stringify({ h: cifraPassword_(String(password), sale, ITERAZIONI), s: sale, i: ITERAZIONI, c: !!cambio }));
+    JSON.stringify({ h: cifraPassword_(String(password), sale, ITERAZIONI), s: sale, i: ITERAZIONI, c: !!cambio, v: Date.now() }));
 }
 
 function togliCredenziali_(nome) {
   PropertiesService.getScriptProperties().deleteProperty('pw_' + String(nome).toLowerCase());
 }
 
-function nuovaSessione_(nome, cambio) {
+function nuovaSessione_(nome, cambio, versione) {
   var token = Utilities.getUuid() + Utilities.getUuid();
-  CacheService.getScriptCache().put('sess_' + token, JSON.stringify({ u: nome, c: !!cambio }), DURATA_SESSIONE);
+  salvaSessione_(token, { u: nome, c: !!cambio, v: versione || 0, t: Date.now(), inizio: Date.now() });
   return token;
+}
+
+/** La sessione dura al massimo DURATA_SESSIONE dall'accesso, e scade prima se resta inattiva. */
+function salvaSessione_(token, sessione) {
+  var resto = Math.floor(DURATA_SESSIONE - (Date.now() - (sessione.inizio || Date.now())) / 1000);
+  if (resto < 60) { chiudiSessione_(token); return; }
+  CacheService.getScriptCache().put('sess_' + token, JSON.stringify(sessione), resto);
+}
+
+function chiudiSessione_(token) {
+  if (token) CacheService.getScriptCache().remove('sess_' + token);
 }
 
 function leggiSessione_(token) {
@@ -212,7 +236,7 @@ function login_(d) {
   cache.remove(chiave);
   _UTENTE_SESSIONE = u.email;
   registra_('Accesso');
-  return { token: nuovaSessione_(u.email, cr.c), cambio: !!cr.c };
+  return { token: nuovaSessione_(u.email, cr.c, cr.v), cambio: !!cr.c, inattivita: INATTIVITA_MAX };
 }
 
 function cambiaPassword_(d, utente, sessione) {
@@ -222,12 +246,14 @@ function cambiaPassword_(d, utente, sessione) {
   }
   if (cr && cifraPassword_(String(d.password || ''), cr.s, cr.i) === cr.h) throw new Error('La nuova password deve essere diversa da quella attuale.');
   impostaCredenziali_(utente.email, d.password, false);
-  CacheService.getScriptCache().put('sess_' + d._token, JSON.stringify({ u: utente.email, c: false }), DURATA_SESSIONE);
+  // questa sessione resta valida con la nuova password, le altre vengono chiuse
+  sessione.c = false; sessione.v = credenziali_(utente.email).v; sessione.t = Date.now();
+  salvaSessione_(d._token, sessione);
   registra_('Password cambiata');
 }
 
 function logout_(d) {
-  if (d._token) CacheService.getScriptCache().remove('sess_' + d._token);
+  chiudiSessione_(d._token);
 }
 
 /** L'amministratore assegna una password provvisoria: va cambiata al primo accesso. */
@@ -323,6 +349,97 @@ function militareDa_(id) {
 function nomeMil_(m) { return (m.grado + ' ' + m.cognome + ' ' + m.nome).trim(); }
 
 // ---------------------------------------------------------------------------
+// Archivio annuale: gli anni archiviati stanno in un Foglio separato (sola lettura)
+// ---------------------------------------------------------------------------
+var _archivi = {};
+
+function anniArchiviati_() {
+  var imp = impostazioni_(), out = {};
+  Object.keys(imp).forEach(function (k) { var m = /^archivio_(\d{4})$/.exec(k); if (m && imp[k]) out[m[1]] = imp[k]; });
+  return out;
+}
+
+function impieghiArchivio_(anno) {
+  if (_archivi[anno]) return _archivi[anno];
+  var id = anniArchiviati_()[anno], out = [];
+  if (id) {
+    var sh = SpreadsheetApp.openById(id).getSheetByName('Impieghi'), campi = TABELLE.Impieghi, ultima = sh.getLastRow();
+    if (ultima >= 2) {
+      sh.getRange(2, 1, ultima - 1, campi.length).getValues().forEach(function (r) {
+        var o = {}; campi.forEach(function (c, k) { o[c] = valoreTesto_(r[k]); }); out.push(o);
+      });
+    }
+  }
+  _archivi[anno] = out;
+  return out;
+}
+
+/** Impieghi in un intervallo di date, compresi quelli degli anni archiviati. */
+function impieghiPeriodo_(dal, al) {
+  var arch = anniArchiviati_(), out = leggi_('Impieghi').filter(function (i) { return i.data >= dal && i.data <= al; });
+  for (var a = Number(dal.slice(0, 4)); a <= Number(al.slice(0, 4)); a++) {
+    if (arch[a]) out = out.concat(impieghiArchivio_(String(a)).filter(function (i) { return i.data >= dal && i.data <= al; }));
+  }
+  return out;
+}
+
+function verificaNonArchiviato_(data) {
+  if (data && anniArchiviati_()[String(data).slice(0, 4)]) {
+    throw new Error("L'anno " + String(data).slice(0, 4) + ' e\' archiviato: si puo\' solo consultare.');
+  }
+}
+
+/**
+ * Sposta in un Foglio "Ruolino - archivio AAAA" gli impieghi e il registro di un anno passato.
+ * Il goduto di licenze e recuperi di quell'anno viene conservato come movimento riepilogativo.
+ */
+function archiviaAnno_(d) {
+  var anno = String(d.anno), oggi = Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy');
+  if (!/^\d{4}$/.test(anno) || Number(anno) >= Number(oggi)) throw new Error("Si possono archiviare solo gli anni passati.");
+  if (anniArchiviati_()[anno]) throw new Error("L'anno " + anno + ' e\' gia\' archiviato.');
+  var impieghi = leggi_('Impieghi').filter(function (i) { return i.data.slice(0, 4) === anno; });
+  var registro = leggi_('Registro').filter(function (r) { return String(r.quando).slice(0, 4) === anno; });
+  if (!impieghi.length && !registro.length) throw new Error('Non ci sono dati del ' + anno + ' da archiviare.');
+
+  // 1. goduto dell'anno -> movimenti riepilogativi (cosi' licenze e riepilogo restano corretti)
+  var codici = mappa_(leggi_('Codici'), 'codice'), orario = configurazione_().orario, servizi = giorniServizio_(), goduto = {};
+  impieghi.forEach(function (i) {
+    var c = codici[i.codice];
+    if (!c || !c.contatore) return;
+    var k = i.militare_id + '|' + c.contatore;
+    goduto[k] = (goduto[k] || 0) + scalato_(i, c, orario, servizi);
+  });
+  var movimenti = Object.keys(goduto).filter(function (k) { return goduto[k]; }).map(function (k) {
+    var p = k.split('|');
+    return { id: nuovoId_() + p[0].slice(-3), militare_id: p[0], contatore: p[1], anno: anno, data: anno + '-12-31',
+      quantita: Math.round(goduto[k] * 100) / 100, note: 'Goduto ' + anno + ' (anno archiviato)' };
+  });
+
+  // 2. Foglio d'archivio nella cartella del Ruolino
+  var ss = SpreadsheetApp.create('Ruolino - archivio ' + anno);
+  try { DriveApp.getFileById(ss.getId()).moveTo(DriveApp.getFolderById(impostazioni_().cartella_id)); } catch (e) { /* resta nel Drive principale */ }
+  var shI = ss.getSheets()[0];
+  shI.setName('Impieghi');
+  var righeI = [TABELLE.Impieghi].concat(impieghi.map(function (i) { return riga_('Impieghi', i); }));
+  shI.getRange(1, 1, righeI.length, TABELLE.Impieghi.length).setNumberFormat('@').setValues(righeI);
+  if (registro.length) {
+    var shR = ss.insertSheet('Registro');
+    var righeR = [TABELLE.Registro].concat(registro.map(function (r) { return riga_('Registro', r); }));
+    shR.getRange(1, 1, righeR.length, TABELLE.Registro.length).setNumberFormat('@').setValues(righeR);
+  }
+  SpreadsheetApp.flush();
+
+  // 3. tolgo i dati dal Foglio principale e registro l'archivio
+  aggiungi_('Movimenti', movimenti);
+  riscrivi_('Impieghi', leggi_('Impieghi').filter(function (i) { return i.data.slice(0, 4) !== anno; }));
+  riscrivi_('Registro', leggi_('Registro').filter(function (r) { return String(r.quando).slice(0, 4) !== anno; }));
+  var v = {}; v['archivio_' + anno] = ss.getId();
+  salvaImpostazioni_(v);
+  registra_('Archiviato anno ' + anno + ': ' + impieghi.length + ' giornate, ' + registro.length + ' voci di registro');
+  return { giornate: impieghi.length, registro: registro.length, movimenti: movimenti.length, nome: 'Ruolino - archivio ' + anno };
+}
+
+// ---------------------------------------------------------------------------
 // Situazione e ruolino
 // ---------------------------------------------------------------------------
 function situazione_(d) {
@@ -330,29 +447,35 @@ function situazione_(d) {
   var codici = mappa_(leggi_('Codici'), 'codice');
   var militari = militariOrdinati_().filter(function (m) { return inForza_(m, giorno); });
   var perMil = {};
-  leggi_('Impieghi').forEach(function (i) {
-    if (i.data === giorno && i.codice !== 'NOTA') (perMil[i.militare_id] = perMil[i.militare_id] || []).push(i);
+  impieghiPeriodo_(giorno, giorno).forEach(function (i) {
+    if (i.codice !== 'NOTA') (perMil[i.militare_id] = perMil[i.militare_id] || []).push(i);
   });
+  var elenco = []; // per la stampa: un militare per riga con la sua situazione
   var presenti = [], servizio = [], assenti = {}, fuori = {}, liberi = [];
   var festivo = festivo_(giorno);
   militari.forEach(function (m) {
     var lista = perMil[m.id] || [];
     var ass = lista.filter(function (i) { return codici[i.codice] && !vero_(codici[i.codice].presente_in_sede); })[0];
     var voce = { id: m.id, nome: nomeMil_(m), impieghi: lista.map(function (i) { return { codice: i.codice, localita: i.localita }; }) };
+    var etich = lista.map(function (i) { return i.codice + (i.localita ? ' ' + i.localita : ''); }).join(' + ');
     if (!ass && festivo && !lista.length) {
       liberi.push(voce); // sabato, domenica e festivi: in sede solo chi ha un servizio o un'attivita'
+      elenco.push({ nome: voce.nome, stato: 'Libero dal servizio', dettaglio: '' });
     } else if (!ass) {
       presenti.push(voce);
-      if (lista.some(function (i) { return codici[i.codice] && codici[i.codice].categoria === 'SER'; })) servizio.push(voce);
+      var diServizio = lista.some(function (i) { return codici[i.codice] && codici[i.codice].categoria === 'SER'; });
+      if (diServizio) servizio.push(voce);
+      elenco.push({ nome: voce.nome, stato: diServizio ? 'Presente - di servizio' : 'Presente', dettaglio: etich });
     } else {
       var gruppo = codici[ass.codice].categoria === 'FUO' ? fuori : assenti;
       (gruppo[ass.codice] = gruppo[ass.codice] || []).push({ id: m.id, nome: nomeMil_(m), localita: ass.localita });
+      elenco.push({ nome: voce.nome, stato: gruppo === fuori ? 'Fuori sede' : 'Assente', dettaglio: etich });
     }
   });
   var sc = statoScadenze_(d.oggi || giorno);
   return {
     forza: militari.length, presenti: presenti, servizio: servizio, assenti: assenti, fuori: fuori,
-    liberi: liberi, festivo: festivo,
+    liberi: liberi, festivo: festivo, elenco: elenco,
     scadute: sc.scadute, inScadenza: sc.inScadenza, mancanti: sc.mancanti.length
   };
 }
@@ -362,13 +485,13 @@ function ruolino_(d) {
   var dal = giorni[0].data, al = giorni[giorni.length - 1].data;
   var militari = militariOrdinati_().filter(function (m) { return inForza_(m, dal, al); });
   var ids = mappa_(militari, 'id');
-  var impieghi = leggi_('Impieghi').filter(function (i) { return i.data >= dal && i.data <= al && ids[i.militare_id]; })
+  var impieghi = impieghiPeriodo_(dal, al).filter(function (i) { return ids[i.militare_id]; })
     .map(function (i) { return { id: i.id, m: i.militare_id, d: i.data, c: i.codice, l: i.localita, n: i.note }; });
-  return { giorni: giorni, militari: militari, impieghi: impieghi };
+  return { giorni: giorni, militari: militari, impieghi: impieghi, archiviato: !!anniArchiviati_()[String(d.anno)] };
 }
 
 function impieghiCella_(militareId, data) {
-  return leggi_('Impieghi').filter(function (i) { return i.militare_id === String(militareId) && i.data === data; })
+  return impieghiPeriodo_(data, data).filter(function (i) { return i.militare_id === String(militareId); })
     .map(function (i) { return { id: i.id, m: i.militare_id, d: i.data, c: i.codice, l: i.localita, n: i.note, q: i.quantita,
       da: i.modificato_da, il: i.modificato_il }; });
 }
@@ -445,6 +568,7 @@ function aggiungiSmonto_(m, data, codice, utente) {
 
 function cellaSalva_(d, utente) {
   if (!dataValida_(d.data)) throw new Error('Data non valida');
+  verificaNonArchiviato_(d.data); verificaNonArchiviato_(d.al);
   var m = militareDa_(d.militare_id);
   var cod = mappa_(leggi_('Codici'), 'codice')[d.codice];
   if (!cod) throw new Error('Codice sconosciuto');
@@ -476,6 +600,7 @@ function cellaSalva_(d, utente) {
 }
 
 function cellaElimina_(d) {
+  verificaNonArchiviato_(d.data);
   var m = militareDa_(d.militare_id);
   var ids = d.ids || (d.id ? [d.id] : null);
   var n = eliminaImpieghi_(function (i) {
@@ -486,6 +611,7 @@ function cellaElimina_(d) {
 }
 
 function periodo_(d, utente) {
+  verificaNonArchiviato_(d.dal); verificaNonArchiviato_(d.al);
   if (codicePerdeForza_(d.codice)) {
     // congedo/trasferimento: vale dal giorno indicato in avanti
     if (!dataValida_(d.dal)) throw new Error('Data non valida');
@@ -530,6 +656,7 @@ function periodo_(d, utente) {
 
 /** Cancella i codici di uno o piu' militari in un periodo (al vuoto = fino in fondo). */
 function periodoElimina_(d) {
+  verificaNonArchiviato_(d.dal); verificaNonArchiviato_(d.al);
   if (!dataValida_(d.dal)) throw new Error('Data iniziale non valida');
   if (d.al && (!dataValida_(d.al) || d.al < d.dal)) throw new Error('Data finale non valida');
   if (!d.militari || !d.militari.length) throw new Error('Scegliere almeno un militare');
@@ -630,7 +757,7 @@ function militareScheda_(d) {
     contatori: situazioneContatori_(m.id, d.anno),
     scadenze: scadenze,
     movimenti: leggi_('Movimenti').filter(function (x) { return x.militare_id === m.id; }),
-    impieghi: leggi_('Impieghi').filter(function (i) { return i.militare_id === m.id && i.data >= dal && i.data <= al; })
+    impieghi: impieghiPeriodo_(dal, al).filter(function (i) { return i.militare_id === m.id; })
       .sort(function (a, b) { return a.data.localeCompare(b.data); })
   };
 }
@@ -724,6 +851,44 @@ function licenzeRiepilogo_(d) {
   var dal = elenco[0] + '-01-01', al = elenco[elenco.length - 1] + '-12-31';
   var militari = militariOrdinati_().filter(function (m) { return inForza_(m, dal, al) || d.anchePersi; });
   return { contatore: cont, anni: elenco, militari: militari, spettanze: spett, goduto: goduto };
+}
+
+/** Quanti servizi (o altri codici) ha svolto ogni militare in un periodo. */
+function servizi_(d) {
+  if (!dataValida_(d.dal) || !dataValida_(d.al) || d.al < d.dal) throw new Error('Periodo non valido');
+  var codici = leggi_('Codici').filter(function (c) {
+    return d.categoria === 'tutte' ? c.codice !== 'NOTA' : c.categoria === (d.categoria || 'SER');
+  });
+  var amm = mappa_(codici, 'codice'), conta = {}, usati = {};
+  impieghiPeriodo_(d.dal, d.al).forEach(function (i) {
+    if (!amm[i.codice]) return;
+    var k = i.militare_id + '|' + i.codice;
+    conta[k] = (conta[k] || 0) + 1; usati[i.codice] = true;
+  });
+  var militari = militariOrdinati_().filter(function (m) { return inForza_(m, d.dal, d.al); });
+  return {
+    codici: ordina_(codici, 'ordine').filter(function (c) { return usati[c.codice]; }).map(function (c) { return c.codice; }),
+    militari: militari.map(function (m) { return { id: m.id, nome: nomeMil_(m), stato: m.stato }; }),
+    conta: conta
+  };
+}
+
+/** Copia le spettanze di un anno sull'anno successivo, solo dove non sono gia' inserite. */
+function copiaSpettanze_(d) {
+  var anno = String(d.anno), prec = String(Number(d.anno) - 1);
+  if (!/^\d{4}$/.test(anno)) throw new Error('Anno non valido');
+  var righe = leggi_('Spettanze'), esistenti = {};
+  righe.forEach(function (s) { if (s.anno === anno) esistenti[s.militare_id + '|' + s.contatore] = true; });
+  var inForza = mappa_(militariOrdinati_().filter(function (m) { return inForza_(m, anno + '-01-01', anno + '-12-31'); }), 'id');
+  var nuove = righe.filter(function (s) {
+    return s.anno === prec && inForza[s.militare_id] && !esistenti[s.militare_id + '|' + s.contatore] && (!d.contatore || s.contatore === d.contatore);
+  }).map(function (s, k) {
+    return { id: nuovoId_() + k, militare_id: s.militare_id, contatore: s.contatore, anno: anno, quantita: s.quantita, note: 'Copiata dal ' + prec };
+  });
+  if (!nuove.length) throw new Error('Nessuna spettanza da copiare: il ' + prec + ' non ha spettanze, oppure il ' + anno + ' e\' gia\' compilato.');
+  aggiungi_('Spettanze', nuove);
+  registra_('Copiate ' + nuove.length + ' spettanze dal ' + prec + ' al ' + anno);
+  return nuove.length;
 }
 
 function movimentoSalva_(d) {
@@ -930,6 +1095,10 @@ var AZIONI = {
   cellaElimina: { ruolo: 'Operatore', fn: cellaElimina_ },
   periodo: { ruolo: 'Operatore', fn: periodo_ },
   periodoElimina: { ruolo: 'Operatore', fn: periodoElimina_ },
+  servizi: { ruolo: 'Consultazione', fn: servizi_ },
+  copiaSpettanze: { ruolo: 'Operatore', fn: copiaSpettanze_ },
+  archiviaAnno: { ruolo: 'Amministratore', fn: archiviaAnno_ },
+  anniArchiviati: { ruolo: 'Consultazione', fn: function () { return Object.keys(anniArchiviati_()); } },
   militari: { ruolo: 'Consultazione', fn: function () { return militariOrdinati_(); } },
   militareScheda: { ruolo: 'Consultazione', fn: militareScheda_ },
   militareSalva: { ruolo: 'Operatore', fn: militareSalva_ },

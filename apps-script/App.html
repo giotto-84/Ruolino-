@@ -515,7 +515,7 @@ var MIL_CACHE = [];
 function vistaMilitari() {
   api('militari').then(function (lista) {
     MIL_CACHE = lista;
-    main('<div class="intestazione"><h1>Elenco personale</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico" oninput="filtraMilitari()">'
+    main('<div class="intestazione"><h1>Elenco personale</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico, impiego" oninput="filtraMilitari()">'
       + '<label class="check"><input type="checkbox" id="persi" onchange="filtraMilitari()"> mostra persi dalla forza</label>'
       + (puo('Amministratore') ? bottoneSel('mil', 'Elimina selezionati', 'eliminaMilitari') : '')
       + (puo('Operatore') ? '<button class="bottone primario" onclick="dialogoMilitare()">+ Nuovo militare</button>' : '') + '</div></div>'
@@ -526,15 +526,15 @@ function vistaMilitari() {
 function filtraMilitari() {
   var q = (document.getElementById('cerca').value || '').toUpperCase(), persi = document.getElementById('persi').checked;
   var righe = MIL_CACHE.filter(function (m) {
-    return (persi || m.stato !== 'PER') && (!q || (m.cognome + ' ' + m.nome + ' ' + m.incarico).toUpperCase().indexOf(q) >= 0);
+    return (persi || m.stato !== 'PER') && (!q || (m.cognome + ' ' + m.nome + ' ' + m.incarico + ' ' + (m.impiego || '')).toUpperCase().indexOf(q) >= 0);
   });
   var adm = puo('Amministratore');
-  document.getElementById('tab-mil').innerHTML = '<tr>' + (adm ? '<th>' + selTutti('mil') + '</th>' : '') + '<th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>'
+  document.getElementById('tab-mil').innerHTML = '<tr>' + (adm ? '<th>' + selTutti('mil') + '</th>' : '') + '<th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Impiego</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>'
     + (righe.map(function (m) {
       return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '">' + (adm ? '<td>' + sel('mil', m.id) + '</td>' : '') + '<td>' + esc(m.grado) + '</td><td><a href="#militare/' + esc(m.id) + '"><strong>' + esc(m.cognome) + '</strong></a></td><td>' + esc(m.nome)
-        + '</td><td>' + esc(m.incarico) + '</td><td>' + esc(m.patenti) + '</td><td>' + esc(m.telefono) + '</td><td>' + esc(STATI_MIL[m.stato] || m.stato) + '</td><td>'
+        + '</td><td>' + esc(m.incarico) + '</td><td>' + esc(m.impiego) + '</td><td>' + esc(m.patenti) + '</td><td>' + esc(m.telefono) + '</td><td>' + esc(STATI_MIL[m.stato] || m.stato) + '</td><td>'
         + (puo('Operatore') ? '<button class="link" onclick="dialogoMilitare(' + J(m.id) + ')">modifica</button>' : '') + '</td></tr>';
-    }).join('') || '<tr><td colspan="9" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>');
+    }).join('') || '<tr><td colspan="10" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>');
 }
 
 function dialogoMilitare(id) {
@@ -542,7 +542,9 @@ function dialogoMilitare(id) {
   apriDialogo(modulo(id ? 'Modifica militare' : 'Nuovo militare', [
     { n: 'grado', l: 'Grado', t: 'select', o: CFG.gradi.map(function (g) { return g.sigla; }), v: m.grado },
     { n: 'cognome', l: 'Cognome', req: true, v: m.cognome }, { n: 'nome', l: 'Nome', v: m.nome },
-    { n: 'incarico', l: 'Posizione / incarico', v: m.incarico }, { n: 'patenti', l: 'Patenti', v: m.patenti },
+    { n: 'incarico', l: 'Posizione / incarico', v: m.incarico },
+    { n: 'impiego', l: 'Impiego', v: m.impiego, aiuto: 'Es. Strade Sicure, Leonte, corso...' },
+    { n: 'patenti', l: 'Patenti', v: m.patenti },
     { n: 'telefono', l: 'Telefono', v: m.telefono },
     { n: 'stato', l: 'Stato', t: 'select', o: Object.keys(STATI_MIL).map(function (k) { return [k, STATI_MIL[k]]; }), v: m.stato },
     { n: 'data_ingresso', l: 'In forza dal', t: 'date', v: m.data_ingresso },
@@ -571,7 +573,7 @@ function vistaMilitare(id, anno) {
     var h = '<div class="intestazione"><h1>' + esc(nomeMil(m)) + '</h1><div class="naviga">'
       + (mod ? '<button class="bottone" onclick="dialogoMilitare(' + J(m.id) + ')">Modifica anagrafica</button><button class="bottone" onclick="RU=null;dialogoPeriodo(' + J(m.id) + ')">Inserisci periodo</button>' : '')
       + '</div></div><div class="colonne"><section class="riquadro"><h2>Anagrafica</h2><dl class="dati">'
-      + [['Incarico', m.incarico], ['Patenti', m.patenti], ['Telefono', m.telefono], ['Stato', STATI_MIL[m.stato]], ['In forza dal', it(m.data_ingresso)], ['Perso dalla forza', it(m.data_uscita)], ['Note', m.note]]
+      + [['Incarico', m.incarico], ['Impiego', m.impiego], ['Patenti', m.patenti], ['Telefono', m.telefono], ['Stato', STATI_MIL[m.stato]], ['In forza dal', it(m.data_ingresso)], ['Perso dalla forza', it(m.data_uscita)], ['Note', m.note]]
         .map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + (esc(x[1]) || '-') + '</dd>'; }).join('')
       + '</dl></section><section class="riquadro"><h2>Licenze e recuperi ' + anno + ' <a class="piccolo" href="#militare/' + esc(m.id) + '/' + (anno - 1) + '">&larr; ' + (anno - 1) + '</a><a class="piccolo" href="#militare/' + esc(m.id) + '/' + (anno + 1) + '">' + (anno + 1) + ' &rarr;</a></h2>'
       + '<table class="tabella"><tr><th>Contatore</th><th>Spettante</th><th>Goduto</th><th>Residuo</th><th></th></tr>'

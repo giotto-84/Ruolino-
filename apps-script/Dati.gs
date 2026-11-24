@@ -6,7 +6,7 @@
 
 var TABELLE = {
   Militari: ['id', 'grado', 'cognome', 'nome', 'incarico', 'patenti', 'telefono', 'stato',
-    'data_ingresso', 'data_uscita', 'ordine', 'note'],
+    'data_ingresso', 'data_uscita', 'ordine', 'note', 'impiego'],
   Impieghi: ['id', 'militare_id', 'data', 'codice', 'localita', 'quantita', 'note',
     'modificato_da', 'modificato_il'],
   Codici: ['codice', 'descrizione', 'categoria', 'colore_sfondo', 'colore_testo', 'presente_in_sede',

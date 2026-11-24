@@ -1,24 +1,25 @@
 /**
  * Web app: pagina e funzioni chiamate dal browser.
- * Ruoli: Amministratore (tutto), Operatore (ruolino, anagrafica, licenze, scadenze),
- * Consultazione (sola lettura).
+ *
+ * SICUREZZA: la web app gira con l'account del proprietario ("Esegui come: Me").
+ * Il Foglio e la cartella Drive NON sono condivisi con nessuno: i colleghi vedono i dati
+ * solo attraverso l'app, entrando con nome utente e password del Ruolino.
+ * Le password (cifrate con sale) stanno nelle proprieta' dello script, non nel Foglio.
+ *
+ * Ruoli: Amministratore (tutto), Operatore (brogliaccio, elenco personale, licenze,
+ * scadenze), Consultazione (sola lettura).
  */
 
 function doGet() {
-  var utente = utenteCorrente_();
-  var t = HtmlService.createTemplateFromFile(utente ? 'Index' : 'NonAutorizzato');
-  t.email = emailUtente_();
-  return t.evaluate()
+  return HtmlService.createTemplateFromFile('Index').evaluate()
     .setTitle('Ruolino')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-function include(nome) { return HtmlService.createHtmlOutputFromFile(nome).getContent(); }
-
-function utenteCorrente_() {
-  var email = emailUtente_();
-  if (!email) return null;
-  return leggi_('Utenti').filter(function (u) { return u.email.toLowerCase() === email; })[0] || null;
+/** Usata dal modello Index per includere stile e script (solo questi due file). */
+function include(nome) {
+  if (['Stile', 'App'].indexOf(nome) < 0) throw new Error('File non disponibile');
+  return HtmlService.createHtmlOutputFromFile(nome).getContent();
 }
 
 var LIVELLI = { Consultazione: 1, Operatore: 2, Amministratore: 3 };
@@ -29,35 +30,72 @@ function richiedi_(utente, ruolo) {
   }
 }
 
+/** Nome utente della sessione in corso (per registro e "modificato da"). */
+var _UTENTE_SESSIONE = '';
+
+function utenteDa_(nome) {
+  nome = String(nome || '').trim().toLowerCase();
+  if (!nome) return null;
+  return leggi_('Utenti').filter(function (u) { return u.email.toLowerCase() === nome; })[0] || null;
+}
+
 /** Unico punto di ingresso dal browser. */
 function api(azione, dati) {
-  var utente = utenteCorrente_();
-  if (!utente) return { errore: 'Utente non autorizzato.' };
-  var f = AZIONI[azione];
-  if (!f) return { errore: 'Azione sconosciuta: ' + azione };
   dati = dati || {};
+  var f = AZIONI[azione];
+  if (!f) return { errore: 'Azione sconosciuta' };
   var token = dati._token;
   delete dati._token;
-  try { migrazioni_(); } catch (e) { /* utente in sola lettura */ }
-  if (!f.libera && !sessioneValida_(token, utente.email)) {
-    return { errore: 'Inserisci la password per accedere.', login: true };
+  var utente = null, sessione = null;
+  try {
+    if (!f.libera) {
+      sessione = leggiSessione_(token);
+      utente = sessione && utenteDa_(sessione.u);
+      if (!utente) return { errore: 'Sessione scaduta: accedi di nuovo.', login: true };
+      if (sessione.c && !f.anchePrimaDelCambio) return { errore: 'Devi prima cambiare la password.', cambio: true };
+      _UTENTE_SESSIONE = utente.email;
+    }
+    try { migrazioni_(); } catch (e) { /* riprova alla prossima richiesta */ }
+  } catch (e) {
+    return { errore: e && e.message ? e.message : String(e) };
   }
   dati._token = token;
-  var scrittura = f.ruolo !== 'Consultazione';
   var lock = null;
   try {
-    richiedi_(utente, f.ruolo);
-    if (scrittura) {
+    if (!f.libera) richiedi_(utente, f.ruolo);
+    if (!f.libera && f.ruolo !== 'Consultazione') {
       lock = LockService.getScriptLock();
       lock.waitLock(20000);
     }
-    var risultato = f.fn(dati, utente);
+    var risultato = f.fn(dati, utente, sessione);
     return JSON.parse(JSON.stringify({ ok: risultato === undefined ? true : risultato }));
   } catch (e) {
     return { errore: e && e.message ? e.message : String(e) };
   } finally {
     if (lock) lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Proprietario del Foglio (unico che puo' lanciare setup, backup manuale dal menu, ecc.)
+// ---------------------------------------------------------------------------
+function proprietario_() {
+  var p = PropertiesService.getScriptProperties();
+  var e = p.getProperty('PROPRIETARIO');
+  if (!e) {
+    e = DriveApp.getFileById(db_().getId()).getOwner().getEmail().toLowerCase();
+    p.setProperty('PROPRIETARIO', e);
+  }
+  return e;
+}
+
+function eProprietario_() {
+  var a = (Session.getActiveUser().getEmail() || '').toLowerCase();
+  return !!a && a === proprietario_();
+}
+
+function soloProprietario_() {
+  if (!eProprietario_()) throw new Error('Operazione riservata al proprietario del Foglio.');
 }
 
 // ---------------------------------------------------------------------------
@@ -72,18 +110,49 @@ function migrazioni_() {
     });
     salvaImpostazioni_({ migr_udp_gdg: 'SI' });
   }
+  // Passaggio alla versione privata: solo quando la web app gira come proprietario
+  if (imp.migr_privato !== 'SI' && (Session.getEffectiveUser().getEmail() || '').toLowerCase() === proprietario_()) {
+    rendiPrivato_();
+    salvaImpostazioni_({ migr_privato: 'SI' });
+  }
+}
+
+/** Toglie ogni condivisione a Foglio e cartelle e cancella le vecchie password dal Foglio. */
+function rendiPrivato_() {
+  var proprietario = proprietario_(), imp = impostazioni_(), tolti = {};
+  var oggetti = [DriveApp.getFileById(db_().getId())];
+  ['cartella_id', 'cartella_documenti', 'cartella_import', 'cartella_esportazioni', 'cartella_backup'].forEach(function (k) {
+    if (imp[k]) { try { oggetti.push(DriveApp.getFolderById(imp[k])); } catch (e) { /* cartella rimossa */ } }
+  });
+  oggetti.forEach(function (x) {
+    x.getEditors().forEach(function (u) {
+      var e = u.getEmail().toLowerCase();
+      if (e !== proprietario) { x.removeEditor(u); tolti[e] = true; }
+    });
+    x.getViewers().forEach(function (u) {
+      var e = u.getEmail().toLowerCase();
+      if (e !== proprietario) { x.removeViewer(u); tolti[e] = true; }
+    });
+    try { x.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE); } catch (e) { /* gia' privato */ }
+  });
+  // le password della versione precedente erano nel Foglio: le cancello
+  var cambiati = false;
+  var utenti = leggi_('Utenti').map(function (u) { if (u.password || u.sale) { u.password = ''; u.sale = ''; cambiati = true; } return u; });
+  if (cambiati) riscrivi_('Utenti', utenti);
+  registra_('Sicurezza: Foglio e cartelle resi privati' + (Object.keys(tolti).length ? ' (tolta la condivisione a ' + Object.keys(tolti).join(', ') + ')' : ''));
 }
 
 // ---------------------------------------------------------------------------
-// Accesso con password (oltre all'account Google)
+// Accesso con nome utente e password
 // ---------------------------------------------------------------------------
 var DURATA_SESSIONE = 6 * 60 * 60; // secondi (massimo consentito dalla cache di Google)
 var TENTATIVI_MAX = 5, BLOCCO_SECONDI = 15 * 60;
+var ITERAZIONI = 5000;
 
-function cifraPassword_(password, sale) {
+function cifraPassword_(password, sale, iterazioni) {
   var d = sale + '|' + password;
-  for (var i = 0; i < 300; i++) {
-    d = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, d, Utilities.Charset.UTF_8));
+  for (var i = 0; i < (iterazioni || ITERAZIONI); i++) {
+    d = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, d + sale, Utilities.Charset.UTF_8));
   }
   return d;
 }
@@ -94,54 +163,66 @@ function controllaRequisiti_(password) {
   if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) throw new Error('La password deve contenere lettere e numeri.');
 }
 
-function nuovaSessione_(email) {
+function credenziali_(nome) {
+  var v = PropertiesService.getScriptProperties().getProperty('pw_' + String(nome).toLowerCase());
+  return v ? JSON.parse(v) : null;
+}
+
+/** cambio = true: password provvisoria, va cambiata al primo accesso. */
+function impostaCredenziali_(nome, password, cambio) {
+  controllaRequisiti_(password);
+  var sale = Utilities.getUuid();
+  PropertiesService.getScriptProperties().setProperty('pw_' + String(nome).toLowerCase(),
+    JSON.stringify({ h: cifraPassword_(String(password), sale, ITERAZIONI), s: sale, i: ITERAZIONI, c: !!cambio }));
+}
+
+function togliCredenziali_(nome) {
+  PropertiesService.getScriptProperties().deleteProperty('pw_' + String(nome).toLowerCase());
+}
+
+function nuovaSessione_(nome, cambio) {
   var token = Utilities.getUuid() + Utilities.getUuid();
-  CacheService.getScriptCache().put('sess_' + token, email, DURATA_SESSIONE);
+  CacheService.getScriptCache().put('sess_' + token, JSON.stringify({ u: nome, c: !!cambio }), DURATA_SESSIONE);
   return token;
 }
 
-function sessioneValida_(token, email) {
-  if (!token) return false;
-  return CacheService.getScriptCache().get('sess_' + token) === email;
+function leggiSessione_(token) {
+  if (!token || String(token).length < 30) return null;
+  var v = CacheService.getScriptCache().get('sess_' + token);
+  return v ? JSON.parse(v) : null;
 }
 
-function statoLogin_(d, utente) {
-  return { email: utente.email, nome: utente.nome, haPassword: !!utente.password, attiva: sessioneValida_(d._token, utente.email) };
-}
-
-function login_(d, utente) {
-  var cache = CacheService.getScriptCache(), chiave = 'tent_' + utente.email;
-  var tentativi = Number(cache.get(chiave) || 0);
-  if (tentativi >= TENTATIVI_MAX) throw new Error('Troppi tentativi sbagliati: accesso bloccato per 15 minuti.');
-  if (!utente.password) throw new Error('Devi prima creare la tua password.');
-  if (cifraPassword_(String(d.password || ''), utente.sale) !== utente.password) {
+function login_(d) {
+  var nome = String(d.utente || '').trim().toLowerCase().slice(0, 60);
+  var password = String(d.password || '');
+  var cache = CacheService.getScriptCache();
+  // limite generale contro chi prova molti nomi utente
+  var globale = Number(cache.get('tent_tutti') || 0);
+  if (globale >= 60) throw new Error('Troppi tentativi di accesso: riprova tra qualche minuto.');
+  var chiave = 'tent_' + nome, tentativi = Number(cache.get(chiave) || 0);
+  if (tentativi >= TENTATIVI_MAX) throw new Error('Troppi tentativi sbagliati per questo utente: accesso bloccato per 15 minuti.');
+  var u = utenteDa_(nome), cr = u && credenziali_(nome);
+  var giusta = cr ? cifraPassword_(password, cr.s, cr.i) === cr.h : (cifraPassword_(password, 'x', ITERAZIONI), false);
+  if (!giusta) {
     cache.put(chiave, String(tentativi + 1), BLOCCO_SECONDI);
-    registra_('Accesso: password errata (' + (tentativi + 1) + ')');
-    throw new Error('Password errata' + (tentativi + 1 >= TENTATIVI_MAX ? ': accesso bloccato per 15 minuti.' : ' (tentativo ' + (tentativi + 1) + ' di ' + TENTATIVI_MAX + ').'));
+    cache.put('tent_tutti', String(globale + 1), 300);
+    if (u) { _UTENTE_SESSIONE = u.email; registra_('Accesso: password errata (tentativo ' + (tentativi + 1) + ')'); }
+    throw new Error('Nome utente o password errati' + (tentativi + 1 >= TENTATIVI_MAX ? ': accesso bloccato per 15 minuti.' : '.'));
   }
   cache.remove(chiave);
-  return { token: nuovaSessione_(utente.email) };
+  _UTENTE_SESSIONE = u.email;
+  registra_('Accesso');
+  return { token: nuovaSessione_(u.email, cr.c), cambio: !!cr.c };
 }
 
-function salvaPassword_(utente, password) {
-  controllaRequisiti_(password);
-  var u = leggi_('Utenti').filter(function (x) { return x.email.toLowerCase() === utente.email.toLowerCase(); })[0];
-  u.sale = Utilities.getUuid();
-  u.password = cifraPassword_(String(password), u.sale);
-  aggiorna_('Utenti', u);
-}
-
-/** Primo accesso: l'utente crea la propria password. */
-function creaPassword_(d, utente) {
-  if (utente.password) throw new Error('La password esiste gia\': usa "Cambia password".');
-  salvaPassword_(utente, d.password);
-  registra_('Password creata');
-  return { token: nuovaSessione_(utente.email) };
-}
-
-function cambiaPassword_(d, utente) {
-  if (cifraPassword_(String(d.vecchia || ''), utente.sale) !== utente.password) throw new Error('La password attuale non e\' corretta.');
-  salvaPassword_(utente, d.password);
+function cambiaPassword_(d, utente, sessione) {
+  var cr = credenziali_(utente.email);
+  if (!sessione.c && (!cr || cifraPassword_(String(d.vecchia || ''), cr.s, cr.i) !== cr.h)) {
+    throw new Error('La password attuale non e\' corretta.');
+  }
+  if (cr && cifraPassword_(String(d.password || ''), cr.s, cr.i) === cr.h) throw new Error('La nuova password deve essere diversa da quella attuale.');
+  impostaCredenziali_(utente.email, d.password, false);
+  CacheService.getScriptCache().put('sess_' + d._token, JSON.stringify({ u: utente.email, c: false }), DURATA_SESSIONE);
   registra_('Password cambiata');
 }
 
@@ -149,17 +230,48 @@ function logout_(d) {
   if (d._token) CacheService.getScriptCache().remove('sess_' + d._token);
 }
 
-/** L'amministratore azzera la password: al prossimo accesso l'utente ne crea una nuova. */
+/** L'amministratore assegna una password provvisoria: va cambiata al primo accesso. */
 function azzeraPassword_(d) {
-  var emails = elenco_(d, 'email').map(function (e) { return e.toLowerCase(); });
-  var righe = leggi_('Utenti');
-  righe.forEach(function (u) { if (emails.indexOf(u.email.toLowerCase()) >= 0) { u.password = ''; u.sale = ''; aggiorna_('Utenti', u); } });
-  registra_('Password azzerata: ' + emails.join(', '));
-  return emails.length;
+  var nomi = elenco_(d, 'email').map(function (e) { return e.toLowerCase(); });
+  nomi.forEach(function (n) {
+    if (!utenteDa_(n)) throw new Error('Utente sconosciuto: ' + n);
+    impostaCredenziali_(n, d.password, true);
+  });
+  registra_('Password provvisoria assegnata a: ' + nomi.join(', '));
+  return nomi.length;
 }
 
 function utentePubblico_(u) {
-  return { email: u.email, nome: u.nome, ruolo: u.ruolo, haPassword: !!u.password };
+  var cr = credenziali_(u.email);
+  return { email: u.email, nome: u.nome, ruolo: u.ruolo, haPassword: !!cr, provvisoria: !!(cr && cr.c) };
+}
+
+/** Dal menu del Foglio: il proprietario imposta la propria password di amministratore. */
+function impostaPasswordProprietario() {
+  soloProprietario_();
+  var html = HtmlService.createHtmlOutput(
+    '<style>body{font:14px Arial,sans-serif}label{display:block;margin:8px 0 2px}input{width:100%;padding:6px;box-sizing:border-box}button{margin-top:12px;padding:8px 14px}</style>'
+    + '<p>Nome utente e password con cui entrerai nella web app come <b>Amministratore</b>.</p>'
+    + '<label>Nome utente</label><input id="u" value="' + proprietario_() + '">'
+    + '<label>Password (almeno 8 caratteri, lettere e numeri)</label><input id="p" type="password">'
+    + '<label>Ripeti la password</label><input id="p2" type="password">'
+    + '<button onclick="if(document.getElementById(\'p\').value!==document.getElementById(\'p2\').value){alert(\'Le password non coincidono\');return;}'
+    + 'google.script.run.withSuccessHandler(function(){alert(\'Password salvata\');google.script.host.close();}).withFailureHandler(function(e){alert(e.message);})'
+    + '.salvaPasswordProprietario(document.getElementById(\'u\').value,document.getElementById(\'p\').value)">Salva</button>'
+  ).setWidth(420).setHeight(330);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Ruolino - password amministratore');
+}
+
+function salvaPasswordProprietario(nome, password) {
+  soloProprietario_();
+  nome = String(nome || '').trim().toLowerCase();
+  if (!/^[a-z0-9._@-]{3,60}$/.test(nome)) throw new Error('Nome utente non valido (3-60 caratteri: lettere, numeri, . _ - @)');
+  var u = utenteDa_(nome);
+  if (u) { u.ruolo = 'Amministratore'; aggiorna_('Utenti', u); }
+  else aggiungi_('Utenti', [{ email: nome, nome: 'Amministratore', ruolo: 'Amministratore', password: '', sale: '' }]);
+  impostaCredenziali_(nome, password, false);
+  _UTENTE_SESSIONE = nome;
+  registra_('Password amministratore impostata dal proprietario');
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +292,7 @@ function configurazione_() {
       lun: imp.ore_lun, mar: imp.ore_mar, mer: imp.ore_mer, gio: imp.ore_gio,
       ven: imp.ore_ven, sab: imp.ore_sab, dom: imp.ore_dom, festivi_zero: imp.festivi_zero
     },
-    cartellaUrl: imp.cartella_id ? 'https://drive.google.com/drive/folders/' + imp.cartella_id : ''
+    cartellaUrl: ''
   };
 }
 
@@ -768,52 +880,47 @@ function orarioSalva_(d) {
 }
 
 // ---------------------------------------------------------------------------
-// Utenti (con condivisione automatica di Foglio e cartella Drive)
+// Utenti (nome utente, ruolo; le password stanno nelle proprieta' dello script)
 // ---------------------------------------------------------------------------
-function condividi_(email, ruolo, togli) {
-  var file = DriveApp.getFileById(db_().getId());
-  var cartella = DriveApp.getFolderById(impostazioni_().cartella_id);
-  var proprietario = file.getOwner() && file.getOwner().getEmail().toLowerCase();
-  if (email === proprietario) return;
-  [file, cartella].forEach(function (x) {
-    try { x.removeEditor(email); } catch (e) { /* non presente */ }
-    try { x.removeViewer(email); } catch (e) { /* non presente */ }
-    if (!togli) {
-      if (ruolo === 'Consultazione') x.addViewer(email); else x.addEditor(email);
-    }
-  });
-}
-
 function utenteSalva_(d) {
-  var email = String(d.email || '').trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Email non valida');
+  var nome = String(d.email || '').trim().toLowerCase();
+  if (!/^[a-z0-9._@-]{3,60}$/.test(nome)) throw new Error('Nome utente non valido (3-60 caratteri: lettere, numeri, . _ - @)');
   if (!LIVELLI[d.ruolo]) throw new Error('Ruolo non valido');
-  var es = leggi_('Utenti').filter(function (u) { return u.email.toLowerCase() === email; })[0];
-  if (es && es.email === emailUtente_() && d.ruolo !== 'Amministratore') throw new Error('Non puoi togliere a te stesso il ruolo di amministratore');
-  condividi_(email, d.ruolo, false);
+  var es = utenteDa_(nome);
+  if (es && es.email.toLowerCase() === _UTENTE_SESSIONE.toLowerCase() && d.ruolo !== 'Amministratore') throw new Error('Non puoi togliere a te stesso il ruolo di amministratore');
+  if (!es && !d.password) throw new Error('Indica una password provvisoria per il nuovo utente');
+  if (d.password) impostaCredenziali_(nome, d.password, true);
   if (es) { es.nome = d.nome || ''; es.ruolo = d.ruolo; aggiorna_('Utenti', es); }
-  else aggiungi_('Utenti', [{ email: email, nome: d.nome || '', ruolo: d.ruolo }]);
-  registra_('Utente ' + email + ': ' + d.ruolo);
+  else aggiungi_('Utenti', [{ email: nome, nome: d.nome || '', ruolo: d.ruolo, password: '', sale: '' }]);
+  registra_('Utente ' + nome + ': ' + d.ruolo + (d.password ? ' (password provvisoria)' : ''));
 }
 
 function utenteElimina_(d) {
-  var emails = elenco_(d, 'email').map(function (e) { return e.toLowerCase(); });
-  if (emails.indexOf(emailUtente_()) >= 0) throw new Error('Non puoi eliminare te stesso');
-  emails.forEach(function (e) { condividi_(e, '', true); });
-  elimina_('Utenti', function (u) { return emails.indexOf(u.email.toLowerCase()) >= 0; });
-  registra_('Rimossi utenti: ' + emails.join(', '));
-  return emails.length;
+  var nomi = elenco_(d, 'email').map(function (e) { return e.toLowerCase(); });
+  if (nomi.indexOf(_UTENTE_SESSIONE.toLowerCase()) >= 0) throw new Error('Non puoi eliminare te stesso');
+  nomi.forEach(togliCredenziali_);
+  elimina_('Utenti', function (u) { return nomi.indexOf(u.email.toLowerCase()) >= 0; });
+  registra_('Rimossi utenti: ' + nomi.join(', '));
+  return nomi.length;
+}
+
+/** Documento allegato a una scadenza, scaricato attraverso l'app (il Drive non e' condiviso). */
+function documento_(d) {
+  var s = leggi_('Scadenze').filter(function (x) { return x.id === String(d.id); })[0];
+  if (!s || !s.documento_id) throw new Error('Documento non trovato');
+  var b = DriveApp.getFileById(s.documento_id).getBlob();
+  if (b.getBytes().length > 20 * 1024 * 1024) throw new Error('Documento troppo grande da scaricare dall\'app');
+  return { nome: s.documento_nome || b.getName(), mime: b.getContentType(), base64: Utilities.base64Encode(b.getBytes()) };
 }
 
 // ---------------------------------------------------------------------------
 // Elenco azioni
 // ---------------------------------------------------------------------------
 var AZIONI = {
-  statoLogin: { ruolo: 'Consultazione', libera: true, fn: statoLogin_ },
   login: { ruolo: 'Consultazione', libera: true, fn: login_ },
-  creaPassword: { ruolo: 'Consultazione', libera: true, fn: creaPassword_ },
-  cambiaPassword: { ruolo: 'Consultazione', fn: cambiaPassword_ },
-  logout: { ruolo: 'Consultazione', fn: logout_ },
+  cambiaPassword: { ruolo: 'Consultazione', anchePrimaDelCambio: true, fn: cambiaPassword_ },
+  logout: { ruolo: 'Consultazione', anchePrimaDelCambio: true, fn: logout_ },
+  documento: { ruolo: 'Consultazione', fn: documento_ },
   azzeraPassword: { ruolo: 'Amministratore', fn: azzeraPassword_ },
   avvio: { ruolo: 'Consultazione', fn: function (d, u) { return { utente: utentePubblico_(u), config: configurazione_() }; } },
   situazione: { ruolo: 'Consultazione', fn: situazione_ },
@@ -841,7 +948,7 @@ var AZIONI = {
   orarioSalva: { ruolo: 'Amministratore', fn: orarioSalva_ },
   importa: { ruolo: 'Amministratore', fn: function (d) { return importaBrogliaccio_(d); } },
   esporta: { ruolo: 'Consultazione', fn: function (d) { return esportaRuolino_(d.anno, d.mese); } },
-  backupOra: { ruolo: 'Amministratore', fn: function () { return backupGiornaliero(); } },
+  backupOra: { ruolo: 'Amministratore', fn: function () { return backup_(); } },
   utenti: { ruolo: 'Amministratore', fn: function () { return leggi_('Utenti').map(utentePubblico_); } },
   utenteSalva: { ruolo: 'Amministratore', fn: utenteSalva_ },
   utenteElimina: { ruolo: 'Amministratore', fn: utenteElimina_ },

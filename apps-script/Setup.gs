@@ -7,12 +7,14 @@
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ruolino')
     .addItem('Configurazione iniziale', 'setup')
+    .addItem('Imposta la mia password di amministratore', 'impostaPasswordProprietario')
     .addItem('Apri la web app', 'apriWebApp_')
     .addItem('Backup ora', 'backupGiornaliero')
     .addToUi();
 }
 
 function apriWebApp_() {
+  soloProprietario_();
   var url = ScriptApp.getService().getUrl();
   var html = url
     ? '<p>Indirizzo della web app:</p><p><a href="' + url + '" target="_blank">' + url + '</a></p>'
@@ -85,6 +87,7 @@ var ORARIO_INIZIALE = { ore_lun: 8, ore_mar: 8, ore_mer: 8, ore_gio: 8, ore_ven:
 
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || db_();
+  soloProprietario_();
   var props = PropertiesService.getScriptProperties();
   props.setProperty('DB_ID', ss.getId());
   _db = ss;
@@ -153,7 +156,7 @@ function setup() {
 
   registra_('Configurazione iniziale eseguita');
   try {
-    SpreadsheetApp.getUi().alert('Configurazione completata.\n\nOra pubblica la web app: ' +
-      'Estensioni > Apps Script > Esegui il deployment > Nuovo deployment (vedi LEGGIMI).');
+    SpreadsheetApp.getUi().alert('Configurazione completata.\n\n1) Menu Ruolino > Imposta la mia password di amministratore.\n' +
+      '2) Pubblica la web app: Esegui come "Me", Chi ha accesso "Chiunque" (vedi LEGGIMI).');
   } catch (e) { /* eseguito dall'editor */ }
 }

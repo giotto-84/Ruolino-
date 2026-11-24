@@ -15,10 +15,10 @@ function esc(s) {
 }
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 function oggi() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-function it(s) { if (!s) return ''; var p = String(s).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : s; }
+function it(s) { if (!s) return ''; var p = String(s).split('-'); return esc(p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : s); }
 function piuGiorni(s, n) { var p = s.split('-'); var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n)); return d.toISOString().slice(0, 10); }
 function giornoSett(s) { var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])).getUTCDay(); }
-function num(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isNaN(n) ? v : String(Math.round(n * 100) / 100).replace('.', ','); }
+function num(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isNaN(n) ? esc(v) : String(Math.round(n * 100) / 100).replace('.', ','); }
 function si(v) { return /^(si|sì|true|1|x)$/i.test(String(v || '').trim()); }
 function puo(ruolo) { return LIVELLO >= LIVELLI[ruolo]; }
 function codice(c) { return CFG.codiciMap[c] || { codice: c, colore_sfondo: '#FFFFFF', colore_testo: '#000000', descrizione: '' }; }
@@ -59,6 +59,7 @@ function api(azione, dati, silenzioso) {
       .withSuccessHandler(function (r) {
         document.getElementById('attesa').hidden = true;
         if (r && r.login) { salvaToken(''); mostraLogin(); ko(new Error(r.errore)); return; }
+        if (r && r.cambio) { mostraCambio(); ko(new Error(r.errore)); return; }
         if (r && r.errore) { avviso(r.errore, true); ko(new Error(r.errore)); } else ok(r ? r.ok : null);
       })
       .withFailureHandler(function (e) {
@@ -138,32 +139,50 @@ function alSalva(fn) {
 
 // ---------------------------------------------------------------- avvio e navigazione
 function avvio() {
-  api('statoLogin').then(function (st) {
-    if (st.attiva) entra(); else mostraLogin(st);
-  });
+  if (TOKEN) entra(); else mostraLogin();
 }
 
-function mostraLogin(st) {
+function svuotaIntestazione() {
   document.getElementById('menu').innerHTML = '';
   document.getElementById('utente').innerHTML = '';
   chiudiDialogo();
-  var disegna = function (st) {
-    var crea = !st.haPassword;
-    main('<div class="riquadro login"><h1>Ruolino - accesso</h1><p class="aiuto">Account: <strong>' + esc(st.email) + '</strong></p>'
-      + (crea ? '<p>Primo accesso: crea la tua password personale (almeno 8 caratteri, con lettere e numeri).</p>' : '')
-      + '<form id="form-login" onsubmit="return false"><label>Password<input type="password" id="pw1" autocomplete="' + (crea ? 'new-password' : 'current-password') + '" autofocus></label>'
-      + (crea ? '<label>Ripeti la password<input type="password" id="pw2" autocomplete="new-password"></label>' : '')
-      + '<button class="primario" id="btn-login">' + (crea ? 'Crea password ed entra' : 'Accedi') + '</button></form>'
-      + (crea ? '' : '<p class="aiuto">Password dimenticata? Chiedi all\'amministratore di azzerarla dalla pagina Utenti.</p>') + '</div>');
-    document.getElementById('btn-login').onclick = function () {
-      var pw = document.getElementById('pw1').value;
-      if (crea && pw !== document.getElementById('pw2').value) { avviso('Le due password non coincidono', true); return; }
-      api(crea ? 'creaPassword' : 'login', { password: pw }).then(function (r) { salvaToken(r.token); entra(); },
-        function () { document.getElementById('pw1').value = ''; });
-    };
-    var pw1 = document.getElementById('pw1'); if (pw1) pw1.focus();
+}
+
+function mostraLogin() {
+  svuotaIntestazione();
+  main('<div class="riquadro login"><h1>Ruolino - accesso</h1>'
+    + '<form id="form-login" onsubmit="return false">'
+    + '<label>Nome utente<input id="login-utente" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></label>'
+    + '<label>Password<input type="password" id="pw1" autocomplete="current-password"></label>'
+    + '<button class="primario" id="btn-login">Accedi</button></form>'
+    + '<p class="aiuto">Password dimenticata? Chiedi all\'amministratore una password provvisoria.</p></div>');
+  var vai = function () {
+    var u = document.getElementById('login-utente').value.trim(), pw = document.getElementById('pw1').value;
+    if (!u || !pw) { avviso('Inserisci nome utente e password', true); return; }
+    api('login', { utente: u, password: pw }).then(function (r) {
+      salvaToken(r.token);
+      if (r.cambio) mostraCambio(); else entra();
+    }, function () { document.getElementById('pw1').value = ''; });
   };
-  if (st) disegna(st); else api('statoLogin', {}, true).then(disegna);
+  document.getElementById('btn-login').onclick = vai;
+  document.getElementById('login-utente').focus();
+}
+
+/** Primo accesso con password provvisoria: va sostituita prima di entrare. */
+function mostraCambio() {
+  svuotaIntestazione();
+  main('<div class="riquadro login"><h1>Nuova password</h1>'
+    + '<p>Stai usando una password provvisoria: scegline una personale (almeno 8 caratteri, con lettere e numeri).</p>'
+    + '<form onsubmit="return false"><label>Nuova password<input type="password" id="pwn1" autocomplete="new-password"></label>'
+    + '<label>Ripeti la password<input type="password" id="pwn2" autocomplete="new-password"></label>'
+    + '<button class="primario" id="btn-cambio">Salva ed entra</button></form>'
+    + '<p><button class="link" onclick="esci()">Esci</button></p></div>');
+  document.getElementById('btn-cambio').onclick = function () {
+    var p1 = document.getElementById('pwn1').value;
+    if (p1 !== document.getElementById('pwn2').value) { avviso('Le due password non coincidono', true); return; }
+    api('cambiaPassword', { password: p1 }).then(function () { avviso('Password salvata'); entra(); });
+  };
+  document.getElementById('pwn1').focus();
 }
 
 function esci() {
@@ -504,10 +523,26 @@ function dialogoPeriodo(mId) {
   });
 }
 
+/** Salva sul dispositivo un file arrivato dal server in base64. */
+function scaricaFile(nome, mime, base64) {
+  var bin = atob(base64), byte = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) byte[i] = bin.charCodeAt(i);
+  var url = URL.createObjectURL(new Blob([byte], { type: mime || 'application/octet-stream' }));
+  var a = document.createElement('a');
+  a.href = url; a.download = nome; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+}
+
 function esporta(anno, mese) {
   api('esporta', { anno: anno, mese: mese }).then(function (r) {
-    apriDialogo('<h2>Esportazione pronta</h2><p>Il file <strong>' + esc(r.nome) + '</strong> e\' stato salvato su Google Drive.</p><p><a class="bottone primario" target="_blank" href="' + esc(r.url) + '">Apri il file</a></p>');
+    scaricaFile(r.nome, r.mime, r.base64);
+    avviso('Scaricato ' + r.nome + ' (una copia e\' anche nella cartella Esportazioni)');
   });
+}
+
+function scaricaDocumento(idScadenza) {
+  api('documento', { id: idScadenza }).then(function (r) { scaricaFile(r.nome, r.mime, r.base64); });
 }
 
 // ---------------------------------------------------------------- militari
@@ -593,7 +628,7 @@ function vistaMilitare(id, anno) {
       + '<table class="tabella"><tr>' + (mod ? '<th>' + selTutti('scad') + '</th>' : '') + '<th>Tipo</th><th>Eseguita</th><th>Scadenza</th><th>Esito</th><th>Note</th><th>Documento</th><th></th></tr>'
       + (r.scadenze.map(function (s) {
         return '<tr class="' + (s.stato === 'storico' ? 'spento' : 'st-' + s.stato) + '">' + (mod ? '<td>' + sel('scad', s.id) + '</td>' : '') + '<td>' + esc(s.tipo) + '</td><td>' + it(s.data_esecuzione) + '</td><td>' + it(s.data_scadenza) + '</td><td>' + esc(s.esito) + '</td><td>' + esc(s.note) + '</td><td>'
-          + (s.documento_url ? '<a class="link-doc" target="_blank" href="' + esc(s.documento_url) + '">' + esc(s.documento_nome || 'apri') + '</a>' : '') + '</td><td>'
+          + (s.documento_url ? '<button class="link link-doc" onclick="scaricaDocumento(' + J(s.id) + ')">' + esc(s.documento_nome || 'scarica') + '</button>' : '') + '</td><td>'
           + (mod ? '<button class="link" onclick="dialogoScadenza(' + J(s) + ')">modifica</button>' : '') + '</td></tr>';
       }).join('') || '<tr><td colspan="8" class="vuoto">Nessuna scadenza registrata.</td></tr>') + '</table></section>'
       + '<section class="riquadro"><h2>Impieghi (ultimi 30 giorni e prossimi 60)</h2><table class="tabella">'
@@ -746,7 +781,7 @@ function vistaScadenze() {
           var s = r.ultime[m.id + '|' + t.nome];
           var stato = s ? s.stato : (si(t.obbligatoria) ? 'mancante' : '');
           var dentro = s ? (mod ? '<button class="link" onclick="dialogoScadenza(' + J(s) + ')">' + (it(s.data_scadenza) || 'senza data') + '</button>' : (it(s.data_scadenza) || 'senza data'))
-            + (s.documento_url ? ' <a target="_blank" href="' + esc(s.documento_url) + '" title="' + esc(s.documento_nome) + '">📎</a>' : '')
+            + (s.documento_url ? ' <button class="link" onclick="scaricaDocumento(' + J(s.id) + ')" title="' + esc(s.documento_nome) + '">📎</button>' : '')
             + (mod ? ' <button class="link piccolo" title="registra rinnovo" onclick="dialogoScadenza(null,' + J(m.id) + ',' + J(t.nome) + ')">↻</button>' : '')
             : (mod ? '<button class="link vuoto" onclick="dialogoScadenza(null,' + J(m.id) + ',' + J(t.nome) + ')">+</button>' : '');
           return '<td class="st-' + stato + '">' + dentro + '</td>';
@@ -884,7 +919,7 @@ function dialogoOrario() {
   alSalva(function (d) { return api('orarioSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); return ricaricaConfig().then(ricarica); }); });
 }
 function backupOra() {
-  api('backupOra').then(function (r) { apriDialogo('<h2>Backup creato</h2><p><a class="bottone primario" target="_blank" href="' + esc(r.url) + '">' + esc(r.nome) + '</a></p>'); });
+  api('backupOra').then(function (r) { apriDialogo('<h2>Backup creato</h2><p><strong>' + esc(r.nome) + '</strong></p><p class="aiuto">La copia e\' nella cartella "Ruolino - file / Backup" sul Drive del proprietario.</p>'); });
 }
 
 // ---------------------------------------------------------------- importazione
@@ -910,32 +945,43 @@ function vistaImporta() {
 // ---------------------------------------------------------------- utenti e registro
 function vistaUtenti() {
   api('utenti').then(function (lista) {
-    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Azzera password', 'azzeraPassword', '-pw') + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
-      + '<p class="aiuto">Aggiungendo un utente, il Foglio dati e la cartella Drive vengono condivisi automaticamente con il suo account Google: '
-      + 'in modifica per Amministratori e Operatori, in sola lettura per Consultazione. Rimuovendolo, la condivisione viene tolta.</p>'
-      + '<p class="aiuto">Ognuno crea la propria password al primo accesso. Se qualcuno la dimentica, selezionalo e premi "Azzera password": al prossimo accesso ne creera\' una nuova.</p>'
-      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Email</th><th>Nome</th><th>Ruolo</th><th>Password</th><th></th></tr>' + lista.map(function (u) {
-        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td>' + (u.haPassword ? 'impostata' : '<span class="vuoto">da creare al primo accesso</span>') + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
+    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Nuova password provvisoria', 'azzeraPassword', '-pw') + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
+      + '<p class="aiuto">Ogni utente entra con nome utente e password: non serve un account Google e il Foglio non e\' condiviso con nessuno. '
+      + 'Quando aggiungi un utente gli assegni una <strong>password provvisoria</strong>, che dovra\' cambiare al primo accesso. '
+      + 'Se qualcuno dimentica la password, selezionalo e premi "Nuova password provvisoria".</p>'
+      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Nome utente</th><th>Nome</th><th>Ruolo</th><th>Password</th><th></th></tr>' + lista.map(function (u) {
+        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td>' + (!u.haPassword ? '<span class="negativo">nessuna: assegna una password provvisoria</span>' : u.provvisoria ? '<span class="vuoto">provvisoria (da cambiare al primo accesso)</span>' : 'personale') + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
           + '</td></tr>';
       }).join('') + '</table>');
   });
 }
 function dialogoUtente(u) {
+  var nuovo = !u;
   u = u || { ruolo: 'Operatore' };
-  apriDialogo(modulo(u.email ? 'Modifica utente' : 'Nuovo utente', [
-    { n: 'email', l: 'Email (account Google)', t: 'email', req: true, v: u.email },
+  apriDialogo(modulo(nuovo ? 'Nuovo utente' : 'Modifica utente', [
+    { n: 'email', l: 'Nome utente', req: true, v: u.email, aiuto: 'Es. mario.rossi (3-60 caratteri: lettere, numeri, punto, trattino, @). Serve per entrare.' },
     { n: 'nome', l: 'Nome da mostrare', v: u.nome },
-    { n: 'ruolo', l: 'Ruolo', t: 'select', o: [['Amministratore', 'Amministratore - tutto'], ['Operatore', 'Operatore - brogliaccio, elenco personale, licenze, scadenze'], ['Consultazione', 'Consultazione - sola lettura']], v: u.ruolo }
+    { n: 'ruolo', l: 'Ruolo', t: 'select', o: [['Amministratore', 'Amministratore - tutto'], ['Operatore', 'Operatore - brogliaccio, elenco personale, licenze, scadenze'], ['Consultazione', 'Consultazione - sola lettura']], v: u.ruolo },
+    { n: 'password', l: nuovo ? 'Password provvisoria' : 'Nuova password provvisoria (facoltativa)', t: 'password', req: nuovo, aiuto: 'Almeno 8 caratteri, con lettere e numeri. Comunicala all\'interessato: al primo accesso dovra\' sceglierne una sua.' }
   ]));
-  if (u.email) document.querySelector('#modulo [name=email]').readOnly = true;
-  alSalva(function (d) { return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato e file condivisi'); ricarica(); }); });
+  if (!nuovo) document.querySelector('#modulo [name=email]').readOnly = true;
+  document.querySelector('#modulo [name=email]').setAttribute('autocapitalize', 'none');
+  document.querySelector('#modulo [name=password]').setAttribute('autocomplete', 'new-password');
+  alSalva(function (d) {
+    d.email = d.email.trim().toLowerCase();
+    return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato'); ricarica(); });
+  });
 }
-function azzeraPassword(emails) {
-  if (emails.length && confirm('Azzerare la password di ' + emails.join(', ') + '? Al prossimo accesso dovranno crearne una nuova.'))
-    api('azzeraPassword', { emails: emails }).then(function () { avviso('Password azzerate'); ricarica(); });
+function azzeraPassword(nomi) {
+  if (!nomi.length) return;
+  apriDialogo(modulo('Password provvisoria per ' + nomi.join(', '), [
+    { n: 'password', l: 'Password provvisoria', t: 'password', req: true, aiuto: 'Almeno 8 caratteri, con lettere e numeri. Al primo accesso dovranno sceglierne una personale.' }
+  ]));
+  document.querySelector('#modulo [name=password]').setAttribute('autocomplete', 'new-password');
+  alSalva(function (d) { return api('azzeraPassword', { emails: nomi, password: d.password }).then(function () { chiudiDialogo(); avviso('Password provvisoria assegnata'); ricarica(); }); });
 }
 function eliminaUtenti(emails) {
-  if (emails.length && confirm('Rimuovere ' + emails.join(', ') + ' e togliere la condivisione dei file?')) api('utenteElimina', { emails: emails }).then(function () { ricarica(); });
+  if (emails.length && confirm('Rimuovere ' + emails.join(', ') + '? Non potranno piu\' entrare.')) api('utenteElimina', { emails: emails }).then(function () { ricarica(); });
 }
 function vistaRegistro() {
   api('registro').then(function (r) {

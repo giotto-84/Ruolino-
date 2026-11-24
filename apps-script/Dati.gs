@@ -95,14 +95,21 @@ function valoreTesto_(v) {
   if (v instanceof Date) {
     return Utilities.formatDate(v, Session.getScriptTimeZone() || 'Europe/Rome', 'yyyy-MM-dd');
   }
-  return v === null || v === undefined ? '' : String(v);
+  v = v === null || v === undefined ? '' : String(v);
+  return v.charAt(0) === "'" ? v.slice(1) : v;
+}
+
+/**
+ * Testo sicuro da scrivere in una cella: cio' che inizia con = + - @ verrebbe
+ * interpretato da Fogli come formula, quindi lo forzo a testo con l'apostrofo.
+ */
+function testoFoglio_(v) {
+  v = v === null || v === undefined ? '' : String(v);
+  return /^[=+\-@]/.test(v) ? "'" + v : v;
 }
 
 function riga_(nome, o) {
-  return TABELLE[nome].map(function (c) {
-    var v = o[c];
-    return v === null || v === undefined ? '' : String(v);
-  });
+  return TABELLE[nome].map(function (c) { return testoFoglio_(o[c]); });
 }
 
 function aggiungi_(nome, oggetti) {
@@ -174,6 +181,8 @@ function registra_(azione) {
   } catch (e) { /* il registro non deve bloccare l'operazione */ }
 }
 
+/** Utente per registro e "modificato da": quello della sessione dell'app, altrimenti l'account Google (menu del Foglio). */
 function emailUtente_() {
+  if (typeof _UTENTE_SESSIONE !== 'undefined' && _UTENTE_SESSIONE) return _UTENTE_SESSIONE;
   return (Session.getActiveUser().getEmail() || '').toLowerCase();
 }

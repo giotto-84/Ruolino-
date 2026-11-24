@@ -162,6 +162,7 @@ function esportaRuolino_(anno, mese) {
       });
       righe.push(r); sfondi.push(sf); testi.push(tx);
     });
+    righe = righe.map(function (r) { return r.map(function (v) { return typeof v === 'number' ? v : testoFoglio_(v); }); });
     var range = sh.getRange(1, 1, righe.length, righe[0].length);
     range.setValues(righe).setBackgrounds(sfondi).setFontColors(testi)
       .setFontSize(8).setBorder(true, true, true, true, true, true, '#999999', SpreadsheetApp.BorderStyle.SOLID)
@@ -175,7 +176,7 @@ function esportaRuolino_(anno, mese) {
 
     var leg = tmp.insertSheet('Legenda');
     var cod = ordina_(leggi_('Codici'), 'ordine').filter(function (c) { return vero_(c.attivo); });
-    leg.getRange(1, 1, cod.length + 1, 2).setValues([['Codice', 'Descrizione']].concat(cod.map(function (c) { return [c.codice, c.descrizione]; })));
+    leg.getRange(1, 1, cod.length + 1, 2).setValues([['Codice', 'Descrizione']].concat(cod.map(function (c) { return [testoFoglio_(c.codice), testoFoglio_(c.descrizione)]; })));
     leg.getRange(2, 1, cod.length, 1).setBackgrounds(cod.map(function (c) { return [c.colore_sfondo]; }))
       .setFontColors(cod.map(function (c) { return [c.colore_testo]; })).setFontWeight('bold');
     leg.setColumnWidth(2, 320);
@@ -184,13 +185,9 @@ function esportaRuolino_(anno, mese) {
     var url = 'https://docs.google.com/spreadsheets/d/' + tmp.getId() + '/export?format=xlsx';
     var xlsx = UrlFetchApp.fetch(url, { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } })
       .getBlob().setName(titolo + '.xlsx');
-    var file;
-    try {
-      file = DriveApp.getFolderById(impostazioni_().cartella_esportazioni).createFile(xlsx);
-    } catch (e) {
-      file = DriveApp.createFile(xlsx); // utenti in sola lettura: nel proprio Drive
-    }
-    return { url: file.getUrl(), nome: file.getName() };
+    // copia nella cartella Esportazioni del proprietario + file scaricato direttamente dall'utente
+    var file = DriveApp.getFolderById(impostazioni_().cartella_esportazioni).createFile(xlsx);
+    return { nome: file.getName(), mime: MimeType.MICROSOFT_EXCEL, base64: Utilities.base64Encode(xlsx.getBytes()) };
   } finally {
     DriveApp.getFileById(tmp.getId()).setTrashed(true);
   }
@@ -199,7 +196,17 @@ function esportaRuolino_(anno, mese) {
 // ---------------------------------------------------------------------------
 // Backup (attivato ogni notte dalla configurazione iniziale)
 // ---------------------------------------------------------------------------
-function backupGiornaliero() {
+/**
+ * Attivata ogni notte (e dal menu del Foglio). Non puo' essere lanciata da altri
+ * attraverso la web app: solo dal proprio attivatore o dal proprietario.
+ */
+function backupGiornaliero(e) {
+  var daAttivatore = e && e.triggerUid && ScriptApp.getProjectTriggers().some(function (t) { return t.getUniqueId() === e.triggerUid; });
+  if (!daAttivatore) soloProprietario_();
+  return backup_();
+}
+
+function backup_() {
   var imp = impostazioni_();
   var cartella = DriveApp.getFolderById(imp.cartella_backup);
   var nome = 'Ruolino backup ' + Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd HH.mm');
@@ -209,5 +216,5 @@ function backupGiornaliero() {
   while (it.hasNext()) files.push(it.next());
   files.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
   files.slice(30).forEach(function (f) { f.setTrashed(true); });
-  return { url: copia.getUrl(), nome: nome };
+  return { nome: nome };
 }

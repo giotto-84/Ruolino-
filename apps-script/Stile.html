@@ -168,35 +168,70 @@ dialog form { display: block; }
 .inp-spett { width: 70px; padding: 3px 5px; text-align: center; }
 .riep-anni td small { color: var(--tenue); font-size: 11px; }
 .riep-anni tr.totali th { background: #e3ebe0; }
+/* --- elementi solo per il telefono --- */
+.hamburger, #pagina-attuale { display: none; }
+.griglia td.cella.in-salvataggio { opacity: .6; }
+.legenda-nota { border: none !important; color: var(--tenue); }
+
 /* --- telefono e schermi piccoli --- */
 @media (max-width: 760px) {
   main { padding: 10px; }
-  h1 { font-size: 18px; margin: 2px 0 8px; }
-  .barra { gap: 8px; padding: 0 8px; flex-wrap: nowrap; }
-  .barra .logo { font-size: 13px; letter-spacing: 1px; padding: 10px 0; }
-  .barra nav { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
-  .barra nav::-webkit-scrollbar { display: none; }
-  .barra nav a { padding: 10px 8px; white-space: nowrap; font-size: 14px; }
-  .barra .utente span:first-child { display: none; }
+  h1 { font-size: 19px; margin: 2px 0 8px; }
+  h2 { font-size: 16px; }
+  /* intestazione compatta con menu a tendina */
+  .barra { position: sticky; top: 0; z-index: 40; gap: 6px; padding: 0 6px; flex-wrap: nowrap; min-height: 48px; }
+  .hamburger { display: block; background: none; border: none; color: #fff; font-size: 24px; padding: 6px 10px; line-height: 1; }
+  .barra .logo { font-size: 13px; letter-spacing: 1px; padding: 0; }
+  #pagina-attuale { display: block; flex: 1; color: #fff; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .barra nav { display: none; position: absolute; top: 48px; left: 0; right: 0; flex-direction: column; background: var(--primario);
+    box-shadow: 0 8px 18px rgba(0,0,0,.25); max-height: calc(100vh - 48px); overflow-y: auto; }
+  body.menu-aperto .barra nav { display: flex; }
+  .barra nav a { padding: 14px 18px; font-size: 16px; border-top: 1px solid rgba(255,255,255,.12); white-space: nowrap; }
+  .barra .utente { gap: 4px; }
+  .barra .utente span { display: none; }
+  .barra .utente button.link { font-size: 15px; padding: 8px 6px; text-decoration: none; }
+  /* niente ingrandimento automatico dell'iPhone sui campi, e tocchi comodi */
+  input, select, textarea { font-size: 16px !important; }
+  button, .bottone { min-height: 40px; }
+  button.link { min-height: 0; }
   .intestazione { margin-bottom: 6px; }
-  .naviga { gap: 4px; }
-  .naviga .bottone, .naviga select, .naviga input { padding: 4px 8px; font-size: 13px; }
+  .naviga { gap: 6px; }
+  .naviga .bottone, .naviga select, .naviga input { padding: 6px 10px; font-size: 14px; }
   .pennello { padding: 6px; gap: 6px; font-size: 13px; }
   .pennello .aiuto, .pennello strong { display: none; }
   .pennello select { flex: 1 1 100%; }
   .pennello input { flex: 1; min-width: 0; }
-  /* griglia: solo il cognome resta fisso a sinistra, cosi' si vedono i giorni */
-  .contenitore-griglia { max-height: 78vh; }
+  /* brogliaccio: solo il cognome fisso a sinistra */
+  .contenitore-griglia { max-height: 75vh; -webkit-overflow-scrolling: touch; }
   .griglia .c1, .griglia .c2 { display: none; }
   .griglia .c3 { left: 0; min-width: 0; width: 96px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
   .griglia thead th { min-width: 46px; }
-  .griglia td.cella { min-width: 46px; max-width: 56px; height: 34px; font-size: 10px; }
+  .griglia td.cella { min-width: 46px; max-width: 56px; height: 36px; font-size: 10px; }
+  /* tabelle larghe: scorrono di lato con la prima colonna ferma */
+  #tab-mil, .riquadro .tabella, main > .tabella { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+  .matrice td:first-child, .matrice th:first-child, .licenze td:first-child, .licenze th:first-child,
+  #tab-mil td:nth-child(2), #tab-mil th:nth-child(2) { position: sticky; left: 0; z-index: 1; background: var(--carta); }
+  .matrice th:first-child, .licenze th:first-child { background: #eef0ec; }
+  .matrice td:first-child, .licenze td:first-child { max-width: 130px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+  .tabella th, .tabella td { padding: 6px 6px; font-size: 13px; }
+  .contenitore-griglia .tabella { font-size: 12px; }
+  .legenda-stati { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; }
+  .legenda-stati span { margin: 0; padding: 2px 6px; }
+  .legenda { font-size: 12px; line-height: 2.2; }
   .riepilogo { grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .numero { padding: 6px 8px; font-size: 12px; }
   .numero span { font-size: 22px; }
-  .tabella th, .tabella td { padding: 4px 5px; font-size: 13px; }
-  .contenitore-griglia .tabella { font-size: 12px; }
-  dialog { padding: 14px; width: 96vw; max-height: 90vh; }
-  #avvisi { left: 10px; right: 10px; }
+  .colonne { grid-template-columns: 1fr; }
+  dl.dati { grid-template-columns: 1fr; }
+  /* finestre a tutto schermo */
+  dialog { width: 100vw; max-width: 100vw; height: 100%; max-height: 100%; margin: 0; border-radius: 0; padding: 14px 14px 40px; }
+  .dlg-chiudi { position: sticky; top: 0; float: right; font-size: 22px; padding: 6px 10px; background: var(--carta); z-index: 2; }
+  .modulo { max-width: none; }
+  dialog { overflow-x: hidden; }
+  dialog .tabella { display: block; overflow-x: auto; }
+  dialog .col-mod { display: none; }
+  dialog h2 { font-size: 17px; padding-right: 40px; }
+  .login { margin: 30px auto; }
+  #avvisi { left: 10px; right: 10px; bottom: 10px; max-width: none; }
 }
 </style>

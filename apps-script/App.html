@@ -50,20 +50,28 @@ var TOKEN = '';
 try { TOKEN = sessionStorage.getItem('ruolinoToken') || ''; } catch (e) { TOKEN = ''; }
 function salvaToken(t) { TOKEN = t || ''; try { if (t) sessionStorage.setItem('ruolinoToken', t); else sessionStorage.removeItem('ruolinoToken'); } catch (e) { /* niente */ } }
 
+var ATTESE = 0, TIMER_ATTESA = null;
+function attesa(si) {
+  ATTESE += si ? 1 : -1; if (ATTESE < 0) ATTESE = 0;
+  clearTimeout(TIMER_ATTESA);
+  if (ATTESE) TIMER_ATTESA = setTimeout(function () { document.getElementById('attesa').hidden = false; }, 350);
+  else document.getElementById('attesa').hidden = true;
+}
+
 function api(azione, dati, silenzioso) {
-  if (!silenzioso) document.getElementById('attesa').hidden = false;
+  if (!silenzioso) attesa(true);
   dati = dati || {};
   dati._token = TOKEN;
   return new Promise(function (ok, ko) {
     google.script.run
       .withSuccessHandler(function (r) {
-        document.getElementById('attesa').hidden = true;
+        if (!silenzioso) attesa(false);
         if (r && r.login) { salvaToken(''); mostraLogin(); ko(new Error(r.errore)); return; }
         if (r && r.cambio) { mostraCambio(); ko(new Error(r.errore)); return; }
         if (r && r.errore) { avviso(r.errore, true); ko(new Error(r.errore)); } else ok(r ? r.ok : null);
       })
       .withFailureHandler(function (e) {
-        document.getElementById('attesa').hidden = true;
+        if (!silenzioso) attesa(false);
         avviso('Errore: ' + (e && e.message ? e.message : e), true); ko(e);
       })
       .api(azione, dati);
@@ -228,7 +236,7 @@ function entra() {
     voci.push(['config', 'Configurazione']);
     if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
     if (puo('Operatore')) voci.push(['registro', 'Registro']);
-    document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '">' + v[1] + '</a>'; }).join('')
+    document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '" onclick="chiudiMenu()">' + v[1] + '</a>'; }).join('')
       + (CFG.cartellaUrl ? '<a href="' + esc(CFG.cartellaUrl) + '" target="_blank" title="Cartella dei file su Google Drive">Drive ↗</a>' : '');
     if (!MENU_COLLEGATO) { window.addEventListener('hashchange', instrada); MENU_COLLEGATO = true; }
     instrada();
@@ -244,8 +252,14 @@ function impostaConfig(c) {
 
 function ricaricaConfig() { return api('avvio', {}, true).then(function (r) { impostaConfig(r.config); }); }
 
+function apriMenu() { document.body.classList.toggle('menu-aperto'); }
+function chiudiMenu() { document.body.classList.remove('menu-aperto'); }
+
 function instrada() {
   var p = (location.hash.replace(/^#/, '') || 'situazione').split('/');
+  chiudiMenu();
+  var voce = document.querySelector('#menu a[data-r="' + p[0] + '"]');
+  var pag = document.getElementById('pagina-attuale'); if (pag) pag.textContent = voce ? voce.textContent : '';
   document.querySelectorAll('#menu a').forEach(function (a) { a.classList.toggle('attivo', a.dataset.r === p[0]); });
   document.body.classList.toggle('largo', ['ruolino', 'scadenze', 'licenze', 'servizi'].indexOf(p[0]) >= 0);
   var viste = { situazione: vistaSituazione, ruolino: vistaRuolino, militari: vistaMilitari, militare: vistaMilitare,
@@ -419,8 +433,15 @@ function cambiaPennello() {
 function applicaPennello(td) {
   var tipo = document.getElementById('pn-tipo').value;
   if (!tipo || td.dataset.inCorso) return;
-  td.dataset.inCorso = '1'; td.style.opacity = '0.5';
+  td.dataset.inCorso = '1';
   var base = { militare_id: td.dataset.m, data: td.dataset.d };
+  // aggiornamento immediato (ottimistico): se il server rifiuta, la casella torna com'era
+  var chiave = base.militare_id + '|' + base.data, prima = (RU.celle[chiave] || []).slice();
+  var provvisoria = tipo === '__cancella' ? [] : (document.getElementById('pn-sost').checked ? [] : prima.filter(function (x) { return x.c !== tipo; }))
+    .concat(tipo === '__cancella' ? [] : [{ id: '', m: base.militare_id, d: base.data, c: tipo, l: document.getElementById('pn-loc').value.toUpperCase(), n: '' }]);
+  sostituisciCella(base.militare_id, base.data, provvisoria);
+  var tdProv = document.querySelector('td.cella[data-m="' + base.militare_id + '"][data-d="' + base.data + '"]');
+  if (tdProv) { tdProv.dataset.inCorso = '1'; tdProv.classList.add('in-salvataggio'); }
   var p = tipo === '__cancella' ? api('cellaElimina', base, true).then(function (l) {
       var dopo = piuGiorni(base.data, 1);
       if (RU.giorni.some(function (g) { return g.data === dopo; })) api('cella', { militare_id: base.militare_id, data: dopo }, true).then(function (l2) { sostituisciCella(base.militare_id, dopo, l2); });
@@ -431,8 +452,7 @@ function applicaPennello(td) {
     if (tipo !== '__cancella' && si(codice(tipo).perde_forza)) { document.getElementById('pn-tipo').value = ''; avviso('Non piu\' in forza da quel giorno'); ricarica(); return; }
     sostituisciCella(base.militare_id, base.data, lista);
     if (tipo !== '__cancella') aggiornaSmonto(base.militare_id, base.data, tipo);
-  },
-    function () { td.style.opacity = ''; delete td.dataset.inCorso; });
+  }, function () { sostituisciCella(base.militare_id, base.data, prima); });
 }
 
 function collegaGriglia() {
@@ -464,13 +484,14 @@ function dialogoCella(mId, data) {
     RU.dlg = { m: mId, d: data };
     var mod = puo('Operatore') && !RU.archiviato;
     var h = '<h2>' + esc(nomeMil(m)) + ' - ' + it(data) + '</h2><table class="tabella">'
-      + (lista.length && mod ? '<tr><th>' + selTutti('voci') + '</th><th>Codice</th><th>Quantita\'</th><th>Note</th><th>Modificato</th></tr>' : '')
+      + (lista.length && mod ? '<tr><th>' + selTutti('voci') + '</th><th>Codice</th><th>Quantita\'</th><th>Note</th><th class="col-mod">Modificato</th><th></th></tr>' : '')
       + (lista.map(function (i) {
-        return '<tr>' + (mod ? '<td>' + sel('voci', i.id) + '</td>' : '') + '<td>' + etichetta(i.c, i.l) + '</td><td>' + esc(num(i.q)) + '</td><td>' + esc(i.n) + '</td><td class="piccolo">' + esc((i.da || '') + ' ' + (i.il || '')) + '</td></tr>';
+        return '<tr>' + (mod ? '<td>' + sel('voci', i.id) + '</td>' : '') + '<td>' + etichetta(i.c, i.l) + '</td><td>' + esc(num(i.q)) + '</td><td>' + esc(i.n) + '</td><td class="piccolo col-mod">' + esc((i.da || '') + ' ' + (i.il || '')) + '</td>'
+          + (mod ? '<td><button class="bottone" onclick="modificaVoce(' + J(i.id) + ')">✎ Modifica</button></td>' : '') + '</tr>';
       }).join('') || '<tr><td class="vuoto">Nessun codice inserito.</td></tr>') + '</table>'
       + (mod && lista.length ? '<p>' + bottoneSel('voci', 'Elimina selezionati', 'eliminaVoci') + '</p>' : '');
     if (mod) {
-      h += '<h3>Aggiungi / modifica</h3>' + modulo('', [
+      h += '<h3 id="titolo-form">Aggiungi un codice</h3>' + modulo('', [
         { n: 'codice', l: 'Codice', t: 'select', o: CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; }) },
         { n: 'al', l: 'Fino al (compreso)', t: 'date', aiuto: 'Facoltativo: per mettere lo stesso codice su piu\' giorni (es. licenza dal ' + it(data) + ' al ...). Per il congedo non serve: vale da questo giorno in avanti.' },
         { n: 'escludiFestivi', l: 'Nel periodo escludi sabati, domeniche e festivi', t: 'checkbox' },
@@ -484,17 +505,50 @@ function dialogoCella(mId, data) {
         + '<p class="aiuto">Lascia la data vuota per cancellare da questo giorno in avanti.</p>';
     }
     apriDialogo(h);
+    RU.dlg.id = '';
     if (mod) alSalva(function (d) {
       d.militare_id = mId; d.data = data; d.sostituisci = d.sostituisci === 'SI'; d.escludiFestivi = d.escludiFestivi === 'SI';
+      var vecchio = RU.dlg.id ? (RU.celle[mId + '|' + data] || []).filter(function (x) { return x.id === RU.dlg.id; })[0] : null;
+      if (vecchio) { d.id = vecchio.id; d.al = ''; }
       if (d.al && d.al < data) { avviso('La data finale e\' precedente al giorno della casella', true); return; }
       var perde = si(codice(d.codice).perde_forza);
       return api('cellaSalva', d).then(function (l) {
         if (d.al || perde) {
           chiudiDialogo(); avviso(perde ? nomeMil(m) + ': non e\' piu\' in forza dal ' + it(data) : 'Periodo inserito'); ricarica();
-        } else { sostituisciCella(mId, data, l); aggiornaSmonto(mId, data, d.codice); dialogoCella(mId, data); }
+        } else {
+          sostituisciCella(mId, data, l);
+          if (si(codice(d.codice).rc_dopo) || (vecchio && si(codice(vecchio.c).rc_dopo))) aggiornaGiornoDopo(mId, data);
+          dialogoCella(mId, data);
+        }
       });
     });
   });
+}
+
+/** Carica un elemento gia' inserito nel modulo per modificarlo. */
+function modificaVoce(id) {
+  var v = (RU.celle[RU.dlg.m + '|' + RU.dlg.d] || []).filter(function (x) { return x.id === id; })[0];
+  if (!v) return;
+  RU.dlg.id = id;
+  var f = document.getElementById('modulo');
+  f.codice.value = v.c; f.localita.value = v.l || ''; f.quantita.value = v.q || ''; f.note.value = v.n || '';
+  f.al.value = ''; f.al.disabled = true; f.escludiFestivi.disabled = true; f.sostituisci.checked = false;
+  document.getElementById('titolo-form').innerHTML = 'Modifica ' + etichetta(v.c, v.l)
+    + ' <button type="button" class="link piccolo" onclick="annullaModifica()">annulla modifica</button>';
+  document.getElementById('salva').textContent = 'Salva modifica';
+  f.codice.focus();
+}
+function annullaModifica() {
+  RU.dlg.id = '';
+  var f = document.getElementById('modulo');
+  f.reset(); f.al.disabled = false; f.escludiFestivi.disabled = false;
+  document.getElementById('titolo-form').textContent = 'Aggiungi un codice';
+  document.getElementById('salva').textContent = 'Salva';
+}
+function aggiornaGiornoDopo(mId, data) {
+  var dopo = piuGiorni(data, 1);
+  if (!RU.giorni.some(function (g) { return g.data === dopo; })) return;
+  api('cella', { militare_id: mId, data: dopo }, true).then(function (l) { sostituisciCella(mId, dopo, l); });
 }
 
 function eliminaVoci(ids) {
@@ -841,8 +895,8 @@ function vistaScadenze() {
     var mod = puo('Operatore');
     var h = '<div class="intestazione"><h1>Scadenze</h1><div class="naviga">' + (mod ? '<button class="bottone primario" onclick="dialogoScadenza()">+ Registra scadenza</button>' : '')
       + (puo('Amministratore') ? '<a class="bottone" href="#config/TipiScadenza">Tipi di scadenza</a>' : '') + '</div></div>'
-      + '<p class="legenda-stati"><span class="st-scaduta">scaduta</span> <span class="st-in_scadenza">in scadenza</span> <span class="st-valida">valida</span> <span class="st-mancante">mancante (obbligatoria)</span> &nbsp; 📎 = documento allegato su Drive</p>'
-      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella matrice"><tr><th>Militare</th>' + r.tipi.map(function (t) { return '<th>' + esc(t.nome) + (t.validita_mesi ? '<br><small>' + esc(t.validita_mesi) + ' mesi</small>' : '') + '</th>'; }).join('') + '</tr>'
+      + '<p class="legenda-stati"><span class="st-scaduta">scaduta</span> <span class="st-in_scadenza">in scadenza</span> <span class="st-valida">valida</span> <span class="st-mancante">mancante</span> <span class="legenda-nota">📎 documento · ↻ rinnovo</span></p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella matrice"><tr><th>Militare</th>' + r.tipi.map(function (t) { return '<th>' + esc(t.nome) + (si(t.anno_solare) ? '<br><small>anno solare</small>' : t.validita_mesi ? '<br><small>' + esc(t.validita_mesi) + ' mesi</small>' : '') + '</th>'; }).join('') + '</tr>'
       + r.militari.map(function (m) {
         return '<tr><td><a href="#militare/' + esc(m.id) + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + r.tipi.map(function (t) {
           var s = r.ultime[m.id + '|' + t.nome];
@@ -865,7 +919,7 @@ function dialogoScadenza(s, mId, tipo) {
     s = s || { militare_id: mId || '', tipo: tipo || '', data_esecuzione: oggi() };
     apriDialogo(modulo(s.id ? 'Modifica scadenza' : 'Registra scadenza', [
       { n: 'militare_id', l: 'Militare', t: 'select', o: mil.filter(function (m) { return m.stato !== 'PER'; }).map(function (m) { return [m.id, nomeMil(m)]; }), v: s.militare_id },
-      { n: 'tipo', l: 'Tipo', t: 'select', o: CFG.tipiScadenza.map(function (t) { return [t.nome, t.nome + (t.validita_mesi ? ' (' + t.validita_mesi + ' mesi)' : '')]; }), v: s.tipo },
+      { n: 'tipo', l: 'Tipo', t: 'select', o: CFG.tipiScadenza.map(function (t) { return [t.nome, t.nome + (si(t.anno_solare) ? ' (anno solare)' : t.validita_mesi ? ' (' + t.validita_mesi + ' mesi)' : '')]; }), v: s.tipo },
       { n: 'data_esecuzione', l: 'Eseguita il', t: 'date', v: s.data_esecuzione },
       { n: 'data_scadenza', l: 'Scade il', t: 'date', v: s.id ? s.data_scadenza : '', aiuto: "Se vuota e il tipo ha una validita', viene calcolata in automatico." },
       { n: 'esito', l: 'Esito', v: s.esito }, { n: 'note', l: 'Note', v: s.note },
@@ -915,7 +969,7 @@ function vistaConfig(tab) {
     }).join('');
   } else if (tab === 'TipiScadenza') {
     h += '<tr>' + ct + '<th>Nome</th><th>Validita\'</th><th>Preavviso</th><th>Obbligatoria</th><th>Descrizione</th><th></th></tr>' + CFG.tipiScadenza.map(function (t) {
-      return '<tr>' + cs(t.nome) + '<td>' + esc(t.nome) + '</td><td>' + (t.validita_mesi ? esc(t.validita_mesi) + ' mesi' : 'data inserita a mano') + '</td><td>' + esc(t.preavviso_giorni) + ' gg</td><td>' + (si(t.obbligatoria) ? "si'" : 'no') + '</td><td>' + esc(t.descrizione) + '</td><td>' + mod(t.nome) + '</td></tr>';
+      return '<tr>' + cs(t.nome) + '<td>' + esc(t.nome) + '</td><td>' + (si(t.anno_solare) ? 'anno solare (31/12)' : t.validita_mesi ? esc(t.validita_mesi) + ' mesi' : 'data inserita a mano') + '</td><td>' + esc(t.preavviso_giorni) + ' gg</td><td>' + (si(t.obbligatoria) ? "si'" : 'no') + '</td><td>' + esc(t.descrizione) + '</td><td>' + mod(t.nome) + '</td></tr>';
     }).join('');
   } else if (tab === 'Contatori') {
     h += '<tr>' + ct + '<th>Nome</th><th>Unita\'</th><th>Attivo</th><th></th></tr>' + CFG.contatori.map(function (c) {
@@ -978,7 +1032,8 @@ function dialogoConfig(tab, valore) {
       { n: 'ordine', l: "Ordine nell'elenco", t: 'number', v: o.ordine || 500 },
       { n: 'attivo', l: 'Attivo', t: 'checkbox', v: valore ? o.attivo : 'SI' }],
     TipiScadenza: [{ n: 'nome', l: 'Nome', req: true, v: o.nome },
-      { n: 'validita_mesi', l: "Validita' (mesi)", t: 'number', v: o.validita_mesi, aiuto: 'Se indicata, la scadenza si calcola dalla data di esecuzione.' },
+      { n: 'anno_solare', l: "Ad anno solare: va fatta ogni anno e scade il 31 dicembre (es. PEFO)", t: 'checkbox', v: o.anno_solare },
+      { n: 'validita_mesi', l: "Validita' (mesi)", t: 'number', v: o.validita_mesi, aiuto: "Se indicata (e non e' ad anno solare), la scadenza si calcola dalla data di esecuzione." },
       { n: 'preavviso_giorni', l: 'Preavviso (giorni)', t: 'number', v: o.preavviso_giorni || 30 },
       { n: 'obbligatoria', l: 'Obbligatoria per tutti', t: 'checkbox', v: o.obbligatoria },
       { n: 'descrizione', l: 'Descrizione', v: o.descrizione }, { n: 'ordine', l: 'Ordine', t: 'number', v: o.ordine || 500 }],

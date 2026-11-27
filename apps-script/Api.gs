@@ -11,9 +11,16 @@
  */
 
 function doGet() {
-  return HtmlService.createTemplateFromFile('Index').evaluate()
+  var pagina = HtmlService.createTemplateFromFile('Index').evaluate()
     .setTitle('Ruolino')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  // aperta dall'icona sulla schermata Home dell'iPhone: a tutto schermo, come un'app
+  try {
+    pagina.addMetaTag('apple-mobile-web-app-capable', 'yes');
+    pagina.addMetaTag('apple-mobile-web-app-title', 'Ruolino');
+    pagina.addMetaTag('mobile-web-app-capable', 'yes');
+  } catch (e) { /* non supportato: si apre normalmente */ }
+  return pagina;
 }
 
 /** Usata dal modello Index per includere stile e script (solo questi due file). */
@@ -120,6 +127,26 @@ function migrazioni_() {
       if ((c.codice === 'Udp' || c.codice === 'Gdg') && !vero_(c.rc_dopo)) { c.rc_dopo = 'SI'; aggiorna_('Codici', c); }
     });
     salvaImpostazioni_({ migr_udp_gdg: 'SI' });
+  }
+  if (imp.migr_guardie !== 'SI') {
+    // tutte le guardie (anche GUARDIA B (4)), Udp e Gdg: il giorno dopo RC di smonto, senza ore
+    leggi_('Codici').forEach(function (c) {
+      if (['GUARDIA A', 'GUARDIA B', 'GUARDIA B (4)', 'Udp', 'Gdg'].indexOf(c.codice) >= 0 && !vero_(c.rc_dopo)) { c.rc_dopo = 'SI'; aggiorna_('Codici', c); }
+    });
+    salvaImpostazioni_({ migr_guardie: 'SI' });
+  }
+  if (imp.migr_pefo_anno !== 'SI') {
+    // PEFO ad anno solare: scade il 31 dicembre dell'anno in cui e' stata fatta
+    var pefo = leggi_('TipiScadenza').filter(function (t) { return t.nome.toUpperCase() === 'PEFO'; })[0];
+    if (pefo && !vero_(pefo.anno_solare)) {
+      pefo.anno_solare = 'SI'; aggiorna_('TipiScadenza', pefo);
+      var cambiate = false, righe = leggi_('Scadenze').map(function (x) {
+        if (x.tipo === pefo.nome && dataValida_(x.data_esecuzione)) { x.data_scadenza = x.data_esecuzione.slice(0, 4) + '-12-31'; cambiate = true; }
+        return x;
+      });
+      if (cambiate) riscrivi_('Scadenze', righe);
+    }
+    salvaImpostazioni_({ migr_pefo_anno: 'SI' });
   }
   // Passaggio alla versione privata: solo quando la web app gira come proprietario
   if (imp.migr_privato !== 'SI' && (Session.getEffectiveUser().getEmail() || '').toLowerCase() === proprietario_()) {
@@ -579,6 +606,12 @@ function cellaSalva_(d, utente) {
     return impieghiCella_(m.id, d.data);
   }
   verificaGiorno_(cod, d.data);
+  if (d.id) {
+    // modifica di un elemento gia' inserito: se cambia il codice, il vecchio viene tolto (con il suo smonto)
+    var vecchio = leggi_('Impieghi').filter(function (i) { return i.id === String(d.id) && i.militare_id === m.id && i.data === d.data; })[0];
+    if (!vecchio) throw new Error('Elemento non trovato: ricarica la pagina.');
+    if (vecchio.codice !== d.codice) eliminaImpieghi_(function (i) { return i.id === vecchio.id; });
+  }
   if (d.sostituisci || codicePerdeForza_(d.codice)) {
     eliminaImpieghi_(function (i) { return i.militare_id === m.id && i.data === d.data && i.codice !== d.codice; });
   }
@@ -949,7 +982,9 @@ function scadenzaSalva_(d) {
   if (!tipo) throw new Error('Tipo di scadenza sconosciuto');
   if (!dataValida_(d.data_esecuzione) && !dataValida_(d.data_scadenza)) throw new Error('Indicare la data di esecuzione o di scadenza');
   var scad = d.data_scadenza;
-  if (!dataValida_(scad) && dataValida_(d.data_esecuzione) && numero_(tipo.validita_mesi)) {
+  if (vero_(tipo.anno_solare) && dataValida_(d.data_esecuzione)) {
+    scad = d.data_esecuzione.slice(0, 4) + '-12-31'; // va rifatta ogni anno: vale fino al 31 dicembre
+  } else if (!dataValida_(scad) && dataValida_(d.data_esecuzione) && numero_(tipo.validita_mesi)) {
     scad = aggiungiMesi_(d.data_esecuzione, numero_(tipo.validita_mesi));
   }
   var rec = d.id ? leggi_('Scadenze').filter(function (s) { return s.id === d.id; })[0] : null;
@@ -996,6 +1031,16 @@ function configSalva_(d) {
   TABELLE[tab].forEach(function (c) { if (o[c] !== undefined) rec[c] = Array.isArray(o[c]) ? o[c].join('') : String(o[c]).trim(); });
   rec[chiave] = valore;
   if (es) aggiorna_(tab, rec); else aggiungi_(tab, [rec]);
+  // tipo di scadenza passato ad anno solare: ricalcolo le scadenze gia' registrate
+  if (tab === 'TipiScadenza' && vero_(rec.anno_solare)) {
+    var cambiate = false, righe = leggi_('Scadenze').map(function (x) {
+      if (x.tipo === rec.nome && dataValida_(x.data_esecuzione) && x.data_scadenza !== x.data_esecuzione.slice(0, 4) + '-12-31') {
+        x.data_scadenza = x.data_esecuzione.slice(0, 4) + '-12-31'; cambiate = true;
+      }
+      return x;
+    });
+    if (cambiate) riscrivi_('Scadenze', righe);
+  }
   // rinomina a cascata
   if (es && d.originale && d.originale !== valore) rinomina_(tab, d.originale, valore);
   registra_('Configurazione ' + tab + ': salvato ' + valore);

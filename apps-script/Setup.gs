@@ -10,7 +10,19 @@ function onOpen() {
     .addItem('Imposta la mia password di amministratore', 'impostaPasswordProprietario')
     .addItem('Apri la web app', 'apriWebApp_')
     .addItem('Backup ora', 'backupGiornaliero')
+    .addItem('Svuota memoria temporanea (dopo modifiche a mano)', 'svuotaMemoria')
     .addToUi();
+}
+
+/** Modifiche fatte a mano nel Foglio: la memoria temporanea di quella scheda viene svuotata. */
+function onEdit(e) {
+  try { invalida_(e.range.getSheet().getName()); } catch (err) { /* niente */ }
+}
+
+function svuotaMemoria() {
+  soloProprietario_();
+  Object.keys(TABELLE).forEach(invalida_);
+  SpreadsheetApp.getUi().alert('Memoria temporanea svuotata: la web app rilegge tutto dal Foglio.');
 }
 
 function apriWebApp_() {
@@ -114,12 +126,13 @@ function setup() {
       return { codice: c[0], descrizione: c[1], categoria: c[2], colore_sfondo: c[3], colore_testo: c[4],
         presente_in_sede: c[5], contatore: c[6], quantita_giorno: 1, scala_orario: ore ? 'SI' : 'NO',
         ordine: (i + 1) * 10, attivo: 'SI', perde_forza: c[0] === 'CONGEDO' ? 'SI' : 'NO',
-        rc_dopo: ['GUARDIA A', 'GUARDIA B', 'Udp', 'Gdg'].indexOf(c[0]) >= 0 ? 'SI' : 'NO', giorni: c[0] === 'GUARDIA B' ? '23456' : '' };
+        rc_dopo: ['GUARDIA A', 'GUARDIA B', 'GUARDIA B (4)', 'Udp', 'Gdg'].indexOf(c[0]) >= 0 ? 'SI' : 'NO', giorni: c[0] === 'GUARDIA B' ? '23456' : '' };
     }));
   }
   if (!leggi_('TipiScadenza').length) {
     aggiungi_('TipiScadenza', TIPI_SCADENZA_INIZIALI.map(function (t, i) {
-      return { nome: t[0], validita_mesi: t[1], preavviso_giorni: t[2], obbligatoria: t[3], descrizione: '', ordine: (i + 1) * 10 };
+      return { nome: t[0], validita_mesi: t[1], preavviso_giorni: t[2], obbligatoria: t[3], descrizione: '', ordine: (i + 1) * 10,
+        anno_solare: t[0] === 'PEFO' ? 'SI' : 'NO' };
     }));
   }
 

@@ -15,7 +15,7 @@ var TABELLE = {
   Contatori: ['nome', 'unita', 'ordine', 'attivo'],
   Spettanze: ['id', 'militare_id', 'contatore', 'anno', 'quantita', 'note'],
   Movimenti: ['id', 'militare_id', 'contatore', 'anno', 'data', 'quantita', 'note'],
-  TipiScadenza: ['nome', 'validita_mesi', 'preavviso_giorni', 'obbligatoria', 'descrizione', 'ordine'],
+  TipiScadenza: ['nome', 'validita_mesi', 'preavviso_giorni', 'obbligatoria', 'descrizione', 'ordine', 'anno_solare'],
   Scadenze: ['id', 'militare_id', 'tipo', 'data_esecuzione', 'data_scadenza', 'esito', 'note',
     'documento_nome', 'documento_url', 'documento_id'],
   Gradi: ['sigla', 'descrizione', 'ordine'],
@@ -52,6 +52,7 @@ function aggiornaIntestazioni_(sh, nome) {
   var campi = TABELLE[nome];
   var attuali = sh.getRange(1, 1, 1, campi.length).getValues()[0].map(String);
   if (attuali.join('|') === campi.join('|')) return;
+  invalida_(nome);
   sh.getRange(1, 1, 1, campi.length).setValues([campi]).setFontWeight('bold').setBackground('#e3ebe0');
   if (nome === 'Codici' && attuali.indexOf('rc_dopo') < 0) {
     var colRc = campi.indexOf('rc_dopo') + 1, ultimaRiga = sh.getLastRow();
@@ -73,10 +74,18 @@ function aggiornaIntestazioni_(sh, nome) {
   }
 }
 
-/** Restituisce tutte le righe della tabella come oggetti (con _riga = numero di riga nel foglio). */
+/**
+ * Restituisce tutte le righe della tabella come oggetti (con _riga = numero di riga nel foglio).
+ * Per velocita' le tabelle restano anche in una memoria temporanea di Google (CacheService),
+ * compressa: si rilegge il Foglio solo quando la tabella e' cambiata (ogni scrittura la invalida).
+ */
 function leggi_(nome) {
   if (_cache[nome]) return _cache[nome];
-  var sh = foglio_(nome), campi = TABELLE[nome], ultima = sh.getLastRow(), out = [];
+  var out = daMemoria_(nome);
+  if (out) { _cache[nome] = out; return out; }
+  var gen = generazione_(nome);
+  var sh = foglio_(nome), campi = TABELLE[nome], ultima = sh.getLastRow();
+  out = [];
   if (ultima >= 2) {
     var valori = sh.getRange(2, 1, ultima - 1, campi.length).getValues();
     for (var i = 0; i < valori.length; i++) {
@@ -88,7 +97,63 @@ function leggi_(nome) {
     }
   }
   _cache[nome] = out;
+  inMemoria_(nome, out, gen);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Memoria temporanea delle tabelle (max 100 KB per voce: la tabella e' compressa e divisa in pezzi)
+// ---------------------------------------------------------------------------
+var MEMORIA_SECONDI = 6 * 60 * 60, PEZZO = 90000;
+
+function memoria_() { return CacheService.getScriptCache(); }
+
+function generazione_(nome) { return memoria_().get('gen_' + nome) || '0'; }
+
+function invalida_(nome) {
+  delete _cache[nome];
+  try {
+    var m = memoria_();
+    m.remove('tab_' + nome);
+    m.put('gen_' + nome, String(Date.now()) + Math.random().toString(36).slice(2, 6), MEMORIA_SECONDI);
+  } catch (e) { /* la memoria e' solo un'accelerazione */ }
+}
+
+function inMemoria_(nome, righe, gen) {
+  try {
+    var campi = TABELLE[nome];
+    var dati = JSON.stringify(righe.map(function (o) { return [o._riga].concat(campi.map(function (c) { return o[c]; })); }));
+    var testo = Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(dati, 'application/json')).getBytes());
+    var pezzi = {}, n = Math.ceil(testo.length / PEZZO) || 1, id = String(Date.now());
+    if (n > 80) return; // tabella troppo grande: si legge sempre dal Foglio
+    for (var i = 0; i < n; i++) pezzi['tab_' + nome + '_' + id + '_' + i] = testo.slice(i * PEZZO, (i + 1) * PEZZO);
+    var m = memoria_();
+    if (generazione_(nome) !== gen) return; // qualcuno ha scritto nel frattempo: non salvo dati vecchi
+    m.putAll(pezzi, MEMORIA_SECONDI);
+    m.put('tab_' + nome, JSON.stringify({ id: id, n: n, gen: gen }), MEMORIA_SECONDI);
+  } catch (e) { /* la memoria e' solo un'accelerazione */ }
+}
+
+function daMemoria_(nome) {
+  try {
+    var m = memoria_(), meta = m.get('tab_' + nome);
+    if (!meta) return null;
+    meta = JSON.parse(meta);
+    if (meta.gen !== generazione_(nome)) return null;
+    var chiavi = [];
+    for (var i = 0; i < meta.n; i++) chiavi.push('tab_' + nome + '_' + meta.id + '_' + i);
+    var pezzi = m.getAll(chiavi), testo = '';
+    for (var k = 0; k < chiavi.length; k++) { if (!pezzi[chiavi[k]]) return null; testo += pezzi[chiavi[k]]; }
+    var dati = Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(testo), 'application/x-gzip')).getDataAsString();
+    var campi = TABELLE[nome];
+    return JSON.parse(dati).map(function (r) {
+      var o = { _riga: r[0] };
+      for (var c = 0; c < campi.length; c++) o[campi[c]] = r[c + 1] === null || r[c + 1] === undefined ? '' : r[c + 1];
+      return o;
+    });
+  } catch (e) {
+    return null;
+  }
 }
 
 function valoreTesto_(v) {
@@ -119,14 +184,14 @@ function aggiungi_(nome, oggetti) {
   sh.getRange(r, 1, oggetti.length, campi.length)
     .setNumberFormat('@')
     .setValues(oggetti.map(function (o) { return riga_(nome, o); }));
-  delete _cache[nome];
+  invalida_(nome);
 }
 
 function aggiorna_(nome, oggetto) {
   if (!oggetto._riga) throw new Error('Riga sconosciuta');
   foglio_(nome).getRange(oggetto._riga, 1, 1, TABELLE[nome].length)
     .setNumberFormat('@').setValues([riga_(nome, oggetto)]);
-  delete _cache[nome];
+  invalida_(nome);
 }
 
 /** Elimina le righe che soddisfano la condizione. Restituisce quante. */
@@ -137,7 +202,7 @@ function elimina_(nome, condizione) {
     var sh = foglio_(nome);
     da.map(function (o) { return o._riga; }).sort(function (a, b) { return b - a; })
       .forEach(function (r) { sh.deleteRow(r); });
-    delete _cache[nome];
+    invalida_(nome);
   } else {
     riscrivi_(nome, tutte.filter(function (o) { return !condizione(o); }));
   }
@@ -148,7 +213,7 @@ function elimina_(nome, condizione) {
 function riscrivi_(nome, oggetti) {
   var sh = foglio_(nome), campi = TABELLE[nome], ultima = sh.getLastRow();
   if (ultima >= 2) sh.getRange(2, 1, ultima - 1, campi.length).clearContent();
-  delete _cache[nome];
+  invalida_(nome);
   aggiungi_(nome, oggetti);
 }
 

@@ -79,6 +79,9 @@ Il link resta lo stesso.
 
 ## Note
 
+* Per velocità l'app tiene le tabelle in una memoria temporanea di Google, che si aggiorna da sola a ogni modifica fatta dall'app.
+  Se modifichi qualcosa **a mano nel Foglio**, la memoria di quella scheda si svuota da sola. Se qualcosa non torna, usa il menu del Foglio **Ruolino → Svuota memoria temporanea**.
+* **Scadenze ad anno solare** (es. PEFO): vanno fatte ogni anno e scadono il 31 dicembre dell'anno in cui sono state fatte. Si imposta per ogni tipo in *Configurazione → Tipi di scadenza*.
 * Ogni modifica viene annotata nella pagina *Registro*. Il Foglio conserva comunque la propria cronologia delle versioni.
 * Il Foglio e la cartella restano privati: **non condividerli**. Chi avesse accesso al Foglio potrebbe modificare dati e programma.
 * Per provare la logica: `node --test apps-script/test/logica.test.js`.

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<?!= include('Stile'); ?>
+</head>
+<body>
+<header class="barra">
+  <button class="hamburger" onclick="apriMenu()" aria-label="Menu">☰</button>
+  <a class="logo" href="#situazione">BROGLIACCIO 2.0</a>
+  <span id="pagina-attuale"></span>
+  <nav id="menu"></nav>
+  <div class="utente" id="utente"></div>
+</header>
+<main id="main"><p class="vuoto">Caricamento...</p></main>
+<div id="avvisi"></div>
+<dialog id="dlg"><button class="dlg-chiudi" onclick="chiudiDialogo()">✕</button><div id="dlg-corpo"></div></dialog>
+<div id="attesa" hidden><div>Attendere...</div></div>
+<?!= include('App'); ?>
+</body>
+</html>

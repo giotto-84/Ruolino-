@@ -1,0 +1,1429 @@
+<script>
+/* Ruolino - interfaccia web (Google Apps Script) */
+var CFG = null, UTENTE = null, LIVELLO = 0;
+var LIVELLI = { Consultazione: 1, Operatore: 2, Amministratore: 3 };
+var CATEGORIE = { SER: 'Servizio in sede', ATT: "Attivita' / visite in sede", FUO: 'Fuori sede', ASS: 'Assenza', ALT: 'Altro / note' };
+var STATI_MIL = { EFF: 'Effettivo', EXT: 'Extra / aggregato', PER: 'Perso dalla forza' };
+var MESI = ['', 'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'];
+var SETT = ['D', 'L', 'M', 'M', 'G', 'V', 'S'];
+
+// ---------------------------------------------------------------- utilita'
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+function oggi() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function it(s) { if (!s) return ''; var p = String(s).split('-'); return esc(p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : s); }
+function piuGiorni(s, n) { var p = s.split('-'); var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n)); return d.toISOString().slice(0, 10); }
+function giornoSett(s) { var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])).getUTCDay(); }
+function num(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isNaN(n) ? esc(v) : String(Math.round(n * 100) / 100).replace('.', ','); }
+function si(v) { return /^(si|sì|true|1|x)$/i.test(String(v || '').trim()); }
+function puo(ruolo) { return LIVELLO >= LIVELLI[ruolo]; }
+function codice(c) { return CFG.codiciMap[c] || { codice: c, colore_sfondo: '#FFFFFF', colore_testo: '#000000', descrizione: '' }; }
+function etichetta(c, loc) { var k = codice(c); return '<span class="etichetta" style="background:' + esc(k.colore_sfondo) + ';color:' + esc(k.colore_testo) + '" title="' + esc(k.descrizione) + '">' + esc(c + (loc ? ' ' + loc : '')) + '</span>'; }
+function opzioni(lista, sel) {
+  return lista.map(function (o) {
+    var v = Array.isArray(o) ? o[0] : o, l = Array.isArray(o) ? o[1] : o;
+    var s = Array.isArray(sel) ? sel.indexOf(String(v)) >= 0 : String(v) === String(sel);
+    return '<option value="' + esc(v) + '"' + (s ? ' selected' : '') + '>' + esc(l) + '</option>';
+  }).join('');
+}
+/** argomento sicuro per onclick="..." */
+function J(v) { return esc(JSON.stringify(v === undefined ? null : v)); }
+/** selezione multipla: casella per riga, casella "tutti" in intestazione, pulsante elimina */
+function sel(gruppo, valore) { return '<input type="checkbox" class="sel" data-g="' + gruppo + '" value="' + esc(valore) + '" onchange="contaSel(\'' + gruppo + '\')">'; }
+function selTutti(gruppo) { return '<input type="checkbox" title="seleziona tutti" onchange="selezionaTutti(\'' + gruppo + '\', this.checked)">'; }
+function selezionaTutti(gruppo, v) { document.querySelectorAll('input.sel[data-g="' + gruppo + '"]').forEach(function (c) { c.checked = v; }); contaSel(gruppo); }
+function selezionati(gruppo) { return Array.prototype.map.call(document.querySelectorAll('input.sel[data-g="' + gruppo + '"]:checked'), function (c) { return c.value; }); }
+function contaSel(gruppo) {
+  var n = selezionati(gruppo).length;
+  document.querySelectorAll('button[data-gsel="' + gruppo + '"]').forEach(function (b) { b.hidden = !n; b.textContent = b.dataset.testo + ' (' + n + ')'; });
+}
+function bottoneSel(gruppo, testo, funzione, suffisso) {
+  return '<button type="button" class="bottone pericolo" hidden id="elimina-' + gruppo + (suffisso || '') + '" data-gsel="' + gruppo + '" data-testo="' + esc(testo) + '" onclick="' + funzione + '(selezionati(\'' + gruppo + '\'))">' + esc(testo) + '</button>';
+}
+function nomeMil(m) { return (m.grado + ' ' + m.cognome + ' ' + m.nome).trim(); }
+
+var TOKEN = '';
+try { TOKEN = sessionStorage.getItem('ruolinoToken') || ''; } catch (e) { TOKEN = ''; }
+function salvaToken(t) { TOKEN = t || ''; try { if (t) sessionStorage.setItem('ruolinoToken', t); else sessionStorage.removeItem('ruolinoToken'); } catch (e) { /* niente */ } }
+
+var ATTESE = 0, TIMER_ATTESA = null;
+function attesa(si) {
+  ATTESE += si ? 1 : -1; if (ATTESE < 0) ATTESE = 0;
+  clearTimeout(TIMER_ATTESA);
+  if (ATTESE) TIMER_ATTESA = setTimeout(function () { document.getElementById('attesa').hidden = false; }, 350);
+  else document.getElementById('attesa').hidden = true;
+}
+
+function api(azione, dati, silenzioso) {
+  if (!silenzioso) attesa(true);
+  dati = dati || {};
+  dati._token = TOKEN;
+  memoriaVecchia(azione);
+  return new Promise(function (ok, ko) {
+    google.script.run
+      .withSuccessHandler(function (r) {
+        if (!silenzioso) attesa(false);
+        if (r && r.login) { salvaToken(''); mostraLogin(); ko(new Error(r.errore)); return; }
+        if (r && r.cambio) { mostraCambio(); ko(new Error(r.errore)); return; }
+        if (r && r.errore) { avviso(r.errore, true); ko(new Error(r.errore)); } else ok(r ? r.ok : null);
+      })
+      .withFailureHandler(function (e) {
+        if (!silenzioso) attesa(false);
+        avviso('Errore: ' + (e && e.message ? e.message : e), true); ko(e);
+      })
+      .api(azione, dati);
+  });
+}
+
+// ---------------------------------------------------------------- memoria delle pagine
+// Le pagine gia' viste si mostrano subito dalla memoria del browser (solo per questa scheda, mai su disco)
+// e intanto si chiede al server la versione aggiornata: se e' cambiata, la pagina si ridisegna da sola.
+var MEMORIA = {};
+var LETTURE = { situazione: 1, ruolino: 1, militari: 1, licenze: 1, servizi: 1, scadenze: 1, militareScheda: 1, cella: 1, avvio: 1, registro: 1, utenti: 1, riepilogoLicenze: 1 };
+
+function chiaveDati(azione, dati) { return azione + '|' + JSON.stringify(dati || {}); }
+
+/** fn(dati, aggiornamento): aggiornamento = true quando arriva la versione nuova dopo quella in memoria */
+function leggiDati(azione, dati, fn) {
+  var k = chiaveDati(azione, dati), rotta = location.hash, m = MEMORIA[k];
+  if (m && m.vecchio) m = null; // dopo una modifica meglio aspettare i dati veri
+  var p = api(azione, dati, !!m).then(function (r) {
+    var json = JSON.stringify(r);
+    var vecchio = MEMORIA[k];
+    MEMORIA[k] = { dati: r, json: json, quando: Date.now() };
+    if (!m) { fn(r, false); return r; }
+    if (location.hash !== rotta) return r; // l'utente e' gia' su un'altra pagina
+    if (!vecchio || vecchio.json !== json) fn(JSON.parse(json), true);
+    return r;
+  });
+  if (m) fn(JSON.parse(m.json), false);
+  return p;
+}
+
+/** dopo una modifica i dati in memoria potrebbero essere vecchi: restano solo come anteprima, il server li aggiorna */
+function memoriaVecchia(azione) {
+  if (LETTURE[azione]) return;
+  Object.keys(MEMORIA).forEach(function (k) { if (k.indexOf('ruolino|') !== 0 || !/^cella/.test(azione)) MEMORIA[k].vecchio = true; });
+}
+
+/** dopo l'accesso carica in sottofondo le pagine piu' usate */
+function precarica() {
+  var o = oggi(), a = Number(o.slice(0, 4)), me = Number(o.slice(5, 7));
+  [['situazione', { data: o, oggi: o }], ['ruolino', { anno: a, mese: me }], ['militari', {}], ['scadenze', { oggi: o }]].forEach(function (x, i) {
+    setTimeout(function () {
+      var k = chiaveDati(x[0], x[1]);
+      if (MEMORIA[k] || !TOKEN) return;
+      api(x[0], x[1], true).then(function (r) { if (!MEMORIA[k]) MEMORIA[k] = { dati: r, json: JSON.stringify(r), quando: Date.now() }; }, function () { /* niente */ });
+    }, 400 + i * 300);
+  });
+}
+
+function avviso(testo, errore) {
+  var d = document.createElement('div');
+  d.className = 'msg' + (errore ? ' error' : '');
+  d.textContent = testo;
+  document.getElementById('avvisi').appendChild(d);
+  setTimeout(function () { d.remove(); }, errore ? 8000 : 3500);
+}
+
+function leggiFile(input) {
+  var f = input && input.files && input.files[0];
+  if (!f) return Promise.resolve(null);
+  if (f.size > 20 * 1024 * 1024) { avviso('File troppo grande (massimo 20 MB)', true); return Promise.reject(new Error('file')); }
+  return new Promise(function (ok) {
+    var r = new FileReader();
+    r.onload = function () { ok({ nome: f.name, mime: f.type, base64: String(r.result).split(',')[1] }); };
+    r.readAsDataURL(f);
+  });
+}
+
+// ---------------------------------------------------------------- dialoghi e moduli
+function apriDialogo(html) { document.getElementById('dlg-corpo').innerHTML = html; var d = document.getElementById('dlg'); if (!d.open) d.showModal(); }
+function chiudiDialogo() { var d = document.getElementById('dlg'); if (d.open) d.close(); }
+
+/** campi: [{n, l, t, v, o (opzioni), aiuto, req}] */
+function modulo(titolo, campi, pulsanti) {
+  var h = '<h2>' + esc(titolo) + '</h2><form id="modulo" onsubmit="return false">';
+  campi.forEach(function (c) {
+    var t = c.t || 'text', v = c.v === undefined || c.v === null ? '' : c.v, id = 'f_' + c.n;
+    h += '<div class="campo">';
+    if (t === 'checkbox') {
+      h += '<label class="check"><input type="checkbox" name="' + c.n + '"' + (si(v) || v === true ? ' checked' : '') + '> ' + esc(c.l) + '</label>';
+    } else {
+      h += '<label for="' + id + '">' + esc(c.l) + (c.req ? ' *' : '') + '</label>';
+      if (t === 'select') h += '<select id="' + id + '" name="' + c.n + '">' + opzioni(c.o, v) + '</select>';
+      else if (t === 'multi') h += '<select id="' + id + '" name="' + c.n + '" multiple>' + opzioni(c.o, v) + '</select>';
+      else if (t === 'textarea') h += '<textarea id="' + id + '" name="' + c.n + '" rows="3">' + esc(v) + '</textarea>';
+      else if (t === 'file') h += '<input id="' + id + '" type="file" name="' + c.n + '"' + (c.accept ? ' accept="' + c.accept + '"' : '') + '>';
+      else h += '<input id="' + id + '" type="' + t + '" name="' + c.n + '" value="' + esc(v) + '"' + (c.req ? ' required' : '') + (t === 'number' ? ' step="any"' : '') + '>';
+    }
+    if (c.aiuto) h += '<small>' + esc(c.aiuto) + '</small>';
+    h += '</div>';
+  });
+  h += '<div class="azioni">' + (pulsanti || '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>') + '</div></form>';
+  return h;
+}
+
+function datiModulo() {
+  var f = document.getElementById('modulo'), out = {};
+  Array.prototype.forEach.call(f.elements, function (el) {
+    if (!el.name || el.type === 'file') return;
+    if (el.type === 'checkbox') out[el.name] = el.checked ? 'SI' : 'NO';
+    else if (el.multiple) out[el.name] = Array.prototype.filter.call(el.options, function (o) { return o.selected; }).map(function (o) { return o.value; });
+    else out[el.name] = el.value;
+  });
+  return out;
+}
+
+function alSalva(fn) {
+  var b = document.getElementById('salva');
+  b.onclick = function () {
+    var f = document.getElementById('modulo');
+    if (!f.reportValidity()) return;
+    b.disabled = true;
+    Promise.resolve(fn(datiModulo())).then(function () { b.disabled = false; }, function () { b.disabled = false; });
+  };
+}
+
+// ---------------------------------------------------------------- avvio e navigazione
+function avvio() {
+  if (TOKEN) entra(); else mostraLogin();
+}
+
+// uscita automatica dopo 30 minuti senza attivita' (controllata anche dal server)
+var INATTIVITA = 30 * 60, TIMER_INATTIVITA = null;
+function attivita() {
+  if (!TOKEN) return;
+  clearTimeout(TIMER_INATTIVITA);
+  TIMER_INATTIVITA = setTimeout(function () {
+    api('logout', {}, true).then(null, function () { /* niente */ });
+    salvaToken(''); mostraLogin();
+    avviso('Sei uscito automaticamente dopo ' + Math.round(INATTIVITA / 60) + ' minuti di inattivita\'.', true);
+  }, INATTIVITA * 1000);
+}
+['click', 'keydown', 'touchstart', 'scroll'].forEach(function (ev) { document.addEventListener(ev, attivita, { passive: true }); });
+
+function svuotaIntestazione() {
+  MEMORIA = {}; RU = null; MIL_CACHE = [];
+  clearTimeout(TIMER_INATTIVITA);
+  document.getElementById('menu').innerHTML = '';
+  document.getElementById('utente').innerHTML = '';
+  chiudiDialogo();
+}
+
+function mostraLogin() {
+  svuotaIntestazione();
+  main('<div class="riquadro login"><h1>Brogliaccio 2.0 - accesso</h1>'
+    + '<form id="form-login" onsubmit="return false">'
+    + '<label>Nome utente<input id="login-utente" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></label>'
+    + '<label>Password<input type="password" id="pw1" autocomplete="current-password"></label>'
+    + '<button class="primario" id="btn-login">Accedi</button></form>'
+    + '<p class="aiuto">Password dimenticata? Chiedi all\'amministratore una password provvisoria.</p></div>');
+  var vai = function () {
+    var u = document.getElementById('login-utente').value.trim(), pw = document.getElementById('pw1').value;
+    if (!u || !pw) { avviso('Inserisci nome utente e password', true); return; }
+    api('login', { utente: u, password: pw }).then(function (r) {
+      salvaToken(r.token);
+      if (r.inattivita) INATTIVITA = r.inattivita;
+      if (r.cambio) mostraCambio(); else entra();
+    }, function () { document.getElementById('pw1').value = ''; });
+  };
+  document.getElementById('btn-login').onclick = vai;
+  document.getElementById('login-utente').focus();
+}
+
+/** Primo accesso con password provvisoria: va sostituita prima di entrare. */
+function mostraCambio() {
+  svuotaIntestazione();
+  main('<div class="riquadro login"><h1>Nuova password</h1>'
+    + '<p>Stai usando una password provvisoria: scegline una personale (almeno 8 caratteri, con lettere e numeri).</p>'
+    + '<form onsubmit="return false"><label>Nuova password<input type="password" id="pwn1" autocomplete="new-password"></label>'
+    + '<label>Ripeti la password<input type="password" id="pwn2" autocomplete="new-password"></label>'
+    + '<button class="primario" id="btn-cambio">Salva ed entra</button></form>'
+    + '<p><button class="link" onclick="esci()">Esci</button></p></div>');
+  document.getElementById('btn-cambio').onclick = function () {
+    var p1 = document.getElementById('pwn1').value;
+    if (p1 !== document.getElementById('pwn2').value) { avviso('Le due password non coincidono', true); return; }
+    api('cambiaPassword', { password: p1 }).then(function () { avviso('Password salvata'); entra(); });
+  };
+  document.getElementById('pwn1').focus();
+}
+
+function esci() {
+  api('logout', {}, true).then(function () { salvaToken(''); mostraLogin(); }, function () { salvaToken(''); mostraLogin(); });
+}
+
+function dialogoCambiaPassword() {
+  apriDialogo(modulo('Cambia password', [
+    { n: 'vecchia', l: 'Password attuale', t: 'password', req: true },
+    { n: 'password', l: 'Nuova password', t: 'password', req: true, aiuto: 'Almeno 8 caratteri, con lettere e numeri.' },
+    { n: 'conferma', l: 'Ripeti la nuova password', t: 'password', req: true }
+  ]));
+  alSalva(function (d) {
+    if (d.password !== d.conferma) { avviso('Le due password non coincidono', true); return; }
+    return api('cambiaPassword', { vecchia: d.vecchia, password: d.password }).then(function () { chiudiDialogo(); avviso('Password cambiata'); });
+  });
+}
+
+var MENU_COLLEGATO = false;
+function entra() {
+  api('avvio').then(function (r) {
+    attivita();
+    UTENTE = r.utente; LIVELLO = LIVELLI[UTENTE.ruolo] || 0;
+    impostaConfig(r.config);
+    document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>'
+      + ' <button class="link" onclick="dialogoCambiaPassword()" title="Cambia password">🔑</button> <button class="link" onclick="esci()">Esci</button>';
+    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Licenze'], ['servizi', 'Servizi'], ['scadenze', 'Scadenze']];
+    voci.push(['config', 'Configurazione']);
+    if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
+    if (puo('Operatore')) voci.push(['registro', 'Registro']);
+    document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '" onclick="chiudiMenu()">' + v[1] + '</a>'; }).join('')
+      + (CFG.cartellaUrl ? '<a href="' + esc(CFG.cartellaUrl) + '" target="_blank" title="Cartella dei file su Google Drive">Drive ↗</a>' : '');
+    if (!MENU_COLLEGATO) { window.addEventListener('hashchange', instrada); MENU_COLLEGATO = true; }
+    instrada();
+    precarica();
+  });
+}
+
+function impostaConfig(c) {
+  CFG = c;
+  CFG.codiciMap = {};
+  c.codici.forEach(function (k) { CFG.codiciMap[k.codice] = k; });
+  CFG.codiciAttivi = c.codici.filter(function (k) { return si(k.attivo); });
+}
+
+function ricaricaConfig() { return api('avvio', {}, true).then(function (r) { impostaConfig(r.config); }); }
+
+function apriMenu() { document.body.classList.toggle('menu-aperto'); }
+function chiudiMenu() { document.body.classList.remove('menu-aperto'); }
+
+function instrada() {
+  var p = (location.hash.replace(/^#/, '') || 'situazione').split('/');
+  chiudiMenu();
+  var voce = document.querySelector('#menu a[data-r="' + p[0] + '"]');
+  var pag = document.getElementById('pagina-attuale'); if (pag) pag.textContent = voce ? voce.textContent : '';
+  document.querySelectorAll('#menu a').forEach(function (a) { a.classList.toggle('attivo', a.dataset.r === p[0]); });
+  document.body.classList.toggle('largo', ['ruolino', 'scadenze', 'licenze', 'servizi'].indexOf(p[0]) >= 0);
+  var viste = { situazione: vistaSituazione, ruolino: vistaRuolino, militari: vistaMilitari, militare: vistaMilitare,
+    licenze: vistaLicenze, servizi: vistaServizi, scadenze: vistaScadenze, config: vistaConfig, importa: vistaImporta, utenti: vistaUtenti, registro: vistaRegistro };
+  (viste[p[0]] || vistaSituazione).apply(null, p.slice(1));
+}
+function ricarica() { instrada(); }
+function main(html) { document.getElementById('main').innerHTML = html; }
+
+// ---------------------------------------------------------------- situazione
+function vistaSituazione(data) {
+  data = data || oggi();
+  leggiDati('situazione', { data: data, oggi: oggi() }, function (r) {
+    function elenco(gruppi) {
+      var k = Object.keys(gruppi).sort();
+      if (!k.length) return '<p class="vuoto">Nessuno.</p>';
+      return k.map(function (c) {
+        return '<h3>' + etichetta(c) + ' (' + gruppi[c].length + ')</h3><ul>' + gruppi[c].map(function (m) {
+          return '<li><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a>' + (m.localita ? ' - ' + esc(m.localita) : '') + '</li>';
+        }).join('') + '</ul>';
+      }).join('');
+    }
+    var nAss = 0, nFuo = 0;
+    Object.keys(r.assenti).forEach(function (k) { nAss += r.assenti[k].length; });
+    Object.keys(r.fuori).forEach(function (k) { nFuo += r.fuori[k].length; });
+    var giorni = ['domenica', "lunedi'", "martedi'", "mercoledi'", "giovedi'", "venerdi'", 'sabato'];
+    var h = '<div class="intestazione"><h1>Dati della forza - ' + giorni[giornoSett(data)] + ' ' + it(data) + '</h1>'
+      + '<div class="naviga"><a class="bottone" href="#situazione/' + piuGiorni(data, -1) + '">&larr;</a>'
+      + '<input type="date" value="' + data + '" onchange="location.hash=\'situazione/\'+this.value">'
+      + '<a class="bottone" href="#situazione/' + piuGiorni(data, 1) + '">&rarr;</a><a class="bottone" href="#situazione/' + oggi() + '">Oggi</a>'
+      + '<button class="bottone primario" onclick="window.print()">Stampa</button></div></div>'
+      + '<div class="riepilogo"><div class="numero"><span>' + r.forza + '</span>Forza</div>'
+      + '<div class="numero verde"><span>' + r.presenti.length + '</span>Presenti in sede</div>'
+      + '<div class="numero giallo"><span>' + r.servizio.length + '</span>Di servizio</div>'
+      + '<div class="numero blu"><span>' + nFuo + '</span>Fuori sede</div>'
+      + '<div class="numero rosso"><span>' + nAss + '</span>Assenti</div>'
+      + (r.festivo ? '<div class="numero"><span>' + r.liberi.length + '</span>Liberi dal servizio</div>' : '') + '</div>'
+      + (r.festivo ? '<p class="avviso">Giorno festivo: in sede conta solo chi ha un servizio o un\'attivita\' inserita.</p>' : '')
+      + '<div class="colonne"><section class="riquadro"><h2>Assenti</h2>' + elenco(r.assenti) + '</section>'
+      + '<section class="riquadro"><h2>Fuori sede</h2>' + elenco(r.fuori) + '</section>'
+      + '<section class="riquadro"><h2>Presenti in sede</h2><ul>' + (r.presenti.map(function (m) {
+        return '<li><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a> ' + m.impieghi.map(function (i) { return etichetta(i.codice, i.localita); }).join(' ') + '</li>';
+      }).join('') || '<li class="vuoto">Nessuno.</li>') + '</ul></section>'
+      + (r.festivo ? '<section class="riquadro"><h2>Liberi dal servizio</h2><ul>' + (r.liberi.map(function (m) {
+        return '<li><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a></li>'; }).join('') || '<li class="vuoto">Nessuno.</li>') + '</ul></section>' : '')
+      + '</div>'
+      + '<section class="riquadro"><h2>Scadenze <a class="piccolo" href="#scadenze">vedi tutte</a></h2>'
+      + (r.mancanti ? '<p class="avviso">' + r.mancanti + ' scadenze obbligatorie non ancora registrate.</p>' : '')
+      + '<table class="tabella"><tr><th>Militare</th><th>Tipo</th><th>Scadenza</th><th>Stato</th></tr>'
+      + r.scadute.map(function (s) { return '<tr class="st-scaduta"><td>' + esc(s.militare) + '</td><td>' + esc(s.tipo) + '</td><td>' + it(s.data_scadenza) + '</td><td>SCADUTA</td></tr>'; }).join('')
+      + r.inScadenza.map(function (s) { return '<tr class="st-in_scadenza"><td>' + esc(s.militare) + '</td><td>' + esc(s.tipo) + '</td><td>' + it(s.data_scadenza) + '</td><td>in scadenza</td></tr>'; }).join('')
+      + (!r.scadute.length && !r.inScadenza.length ? '<tr><td colspan="4" class="vuoto">Nessuna scadenza imminente.</td></tr>' : '')
+      + '</table></section>'
+      // foglio da stampare: un militare per riga
+      + '<section class="solo-stampa"><h2>Situazione nominativa</h2><table class="tabella"><tr><th>N.</th><th>Militare</th><th>Situazione</th><th>Dettaglio</th></tr>'
+      + r.elenco.map(function (e, k) { return '<tr><td>' + (k + 1) + '</td><td>' + esc(e.nome) + '</td><td>' + esc(e.stato) + '</td><td>' + esc(e.dettaglio) + '</td></tr>'; }).join('')
+      + '</table><p class="piccolo">Stampato il ' + it(oggi()) + ' da ' + esc(UTENTE.nome || UTENTE.email) + '</p></section>';
+    main(h);
+  });
+}
+
+// ---------------------------------------------------------------- brogliaccio
+var RU = null; // stato del brogliaccio aperto
+var VISTE_BR = { giorno: 'Giorno', militare: 'Militare', mese: 'Mese' };
+var PENNELLO = { tipo: '', loc: '', sost: true }; // codice scelto nella barra dei codici
+
+function telefono() { return window.matchMedia('(max-width: 760px)').matches; }
+function rottaBr(anno, mese, modo, param) { return '#ruolino/' + anno + '/' + mese + '/' + modo + (param ? '/' + param : ''); }
+
+function vistaRuolino(anno, mese, modo, param) {
+  var o = oggi().split('-');
+  anno = Number(anno) || Number(o[0]); mese = Number(mese) || Number(o[1]);
+  var pref = null;
+  try { pref = sessionStorage.getItem('vistaBrogliaccio'); } catch (e) { pref = null; }
+  modo = VISTE_BR[modo] ? modo : (VISTE_BR[pref] ? pref : (telefono() ? 'giorno' : 'mese'));
+  try { sessionStorage.setItem('vistaBrogliaccio', modo); } catch (e) { /* niente */ }
+  leggiDati('ruolino', { anno: anno, mese: mese }, function (r) {
+    var stessa = RU && RU.anno === anno && RU.mese === mese && RU.modo === modo && RU.param === (param || '');
+    RU = { anno: anno, mese: mese, giorni: r.giorni, militari: r.militari, celle: {}, archiviato: r.archiviato, modo: modo, param: param || '' };
+    r.impieghi.forEach(function (i) { (RU.celle[i.m + '|' + i.d] = RU.celle[i.m + '|' + i.d] || []).push(i); });
+    disegnaBrogliaccio(stessa);
+  });
+}
+
+/** Rimette in memoria il mese aperto con le modifiche fatte (cosi' tornando qui i dati sono gia' aggiornati). */
+function salvaRUinMemoria() {
+  if (!RU) return;
+  var k = chiaveDati('ruolino', { anno: RU.anno, mese: RU.mese });
+  if (!MEMORIA[k]) return;
+  var imp = [];
+  Object.keys(RU.celle).forEach(function (c) { RU.celle[c].forEach(function (i) { if (i.id) imp.push(i); }); });
+  MEMORIA[k].dati.impieghi = imp;
+  MEMORIA[k].json = JSON.stringify(MEMORIA[k].dati);
+}
+
+function filtroBrogliaccio() { try { return sessionStorage.getItem('filtroRuolino') || 'tutti'; } catch (e) { return 'tutti'; } }
+
+function disegnaBrogliaccio(mantieniScorrimento) {
+  var anno = RU.anno, mese = RU.mese, modo = RU.modo, filtro = filtroBrogliaccio();
+  var cont = document.querySelector('.contenitore-griglia'), sx = cont ? cont.scrollLeft : 0, sy = cont ? cont.scrollTop : 0, wy = window.scrollY;
+  RU.mil = RU.militari.filter(function (m) { return filtro === 'tutti' || m.stato === filtro; });
+  var prec = mese === 1 ? [anno - 1, 12] : [anno, mese - 1], succ = mese === 12 ? [anno + 1, 1] : [anno, mese + 1];
+  var mod = puo('Operatore') && !RU.archiviato;
+  var h = (RU.archiviato ? '<p class="avviso">Anno ' + anno + ' archiviato: il brogliaccio si puo\' solo consultare.</p>' : '')
+    + '<div class="intestazione"><h1>Brogliaccio ' + MESI[mese] + ' ' + anno + '</h1><div class="naviga">'
+    + '<div class="selettore-vista">' + Object.keys(VISTE_BR).map(function (v) {
+      return '<a class="' + (v === modo ? 'attiva' : '') + '" href="' + rottaBr(anno, mese, v) + '">' + VISTE_BR[v] + '</a>'; }).join('') + '</div>'
+    + (modo !== 'giorno' ? '<a class="bottone" href="' + rottaBr(prec[0], prec[1], modo, modo === 'militare' ? RU.param : '') + '" title="Mese precedente">&larr;</a>'
+      + '<a class="bottone" href="' + rottaBr(Number(oggi().slice(0, 4)), Number(oggi().slice(5, 7)), modo, modo === 'militare' ? RU.param : '') + '">Oggi</a>'
+      + '<a class="bottone" href="' + rottaBr(succ[0], succ[1], modo, modo === 'militare' ? RU.param : '') + '" title="Mese successivo">&rarr;</a>' : '')
+    + '<select onchange="try{sessionStorage.setItem(\'filtroRuolino\',this.value)}catch(e){};disegnaBrogliaccio(true)">' + opzioni([['tutti', 'Tutti'], ['EFF', 'Solo effettivi'], ['EXT', 'Solo extra']], filtro) + '</select>'
+    + '<button class="bottone solo-pc" onclick="esporta(' + anno + ',' + mese + ')">Esporta Excel</button>'
+    + '<button class="bottone solo-pc" onclick="window.print()">Stampa</button>'
+    + (mod ? '<button class="bottone primario" onclick="dialogoPeriodo()">Periodo</button>' : '') + '</div></div>';
+  var vista = modo === 'giorno' ? htmlVistaGiorno() : modo === 'militare' ? htmlVistaMilitare() : htmlVistaMese();
+  if (vista.indexOf('<!--barra-->') < 0) vista = '<!--barra-->' + vista;
+  h += vista.replace('<!--barra-->', mod ? htmlBarraCodici() : '');
+  main(h);
+  aggiornaTotali();
+  collegaGriglia();
+  evidenziaPennello();
+  cont = document.querySelector('.contenitore-griglia');
+  if (mantieniScorrimento) {
+    if (cont) { cont.scrollLeft = sx; cont.scrollTop = sy; }
+    window.scrollTo(0, wy);
+  } else if (modo === 'mese' && cont) {
+    // porta in vista il giorno di oggi
+    var thOggi = document.querySelector('#griglia thead th.oggi'), c3 = document.querySelector('#griglia thead th.c3');
+    var inizio = thOggi && (thOggi.previousElementSibling && !thOggi.previousElementSibling.classList.contains('c3') ? thOggi.previousElementSibling : thOggi);
+    if (inizio) cont.scrollLeft = Math.max(0, inizio.offsetLeft - (c3 ? c3.offsetWidth : 0));
+  }
+}
+
+// ---- barra dei codici (pulsanti colorati)
+function codiciPreferiti() {
+  var conta = {};
+  Object.keys(RU.celle).forEach(function (k) { RU.celle[k].forEach(function (i) { if (i.c !== 'NOTA') conta[i.c] = (conta[i.c] || 0) + 1; }); });
+  var base = ['LIC ORD', 'RC', 'GUARDIA A', 'GUARDIA B', 'Udp', 'Gdg', 'RC FEST', 'S.I.'];
+  var attivi = {};
+  CFG.codiciAttivi.forEach(function (k) { attivi[k.codice] = true; });
+  var usati = Object.keys(conta).filter(function (c) { return attivi[c]; }).sort(function (a, b) { return conta[b] - conta[a]; });
+  var out = [];
+  usati.concat(base).forEach(function (c) { if (attivi[c] && out.indexOf(c) < 0 && out.length < 8) out.push(c); });
+  if (PENNELLO.tipo && PENNELLO.tipo !== '__cancella' && out.indexOf(PENNELLO.tipo) < 0) out.push(PENNELLO.tipo);
+  return out;
+}
+
+function htmlBarraCodici() {
+  return '<div class="barra-codici">'
+    + codiciPreferiti().map(function (c) {
+      var k = codice(c);
+      return '<button type="button" class="cod-btn" data-cod="' + esc(c) + '" style="background:' + esc(k.colore_sfondo) + ';color:' + esc(k.colore_testo) + '" title="' + esc(k.descrizione) + '" onclick="sceltaCodice(' + J(c) + ')">' + esc(c) + '</button>';
+    }).join('')
+    + '<select id="pn-altro" onchange="sceltaCodice(this.value); this.value=\'\'"><option value="">Altro…</option>'
+    + CFG.codiciAttivi.map(function (k) { return '<option value="' + esc(k.codice) + '">' + esc(k.codice + (k.descrizione ? ' - ' + k.descrizione : '')) + '</option>'; }).join('') + '</select>'
+    + '<button type="button" class="cod-btn cancella" data-cod="__cancella" onclick="sceltaCodice(\'__cancella\')">✖ Cancella</button>'
+    + '<div class="barra-opzioni"><input id="pn-loc" placeholder="localita\' (facoltativa)" value="' + esc(PENNELLO.loc) + '" oninput="PENNELLO.loc=this.value">'
+    + '<label class="check"><input type="checkbox" id="pn-sost"' + (PENNELLO.sost ? ' checked' : '') + ' onchange="PENNELLO.sost=this.checked"> sostituisci i codici gia\' presenti</label></div>'
+    + '<div class="aiuto" id="pn-aiuto"></div>'
+    + '<input type="hidden" id="pn-tipo" value="' + esc(PENNELLO.tipo) + '"></div>';
+}
+
+function sceltaCodice(c) {
+  if (!c) return;
+  PENNELLO.tipo = PENNELLO.tipo === c ? '' : c;
+  var t = document.getElementById('pn-tipo'); if (t) t.value = PENNELLO.tipo;
+  if (PENNELLO.tipo && !document.querySelector('.cod-btn[data-cod="' + PENNELLO.tipo.replace(/"/g, '\\"') + '"]')) { disegnaBrogliaccio(true); return; }
+  evidenziaPennello();
+}
+
+function evidenziaPennello() {
+  document.querySelectorAll('.cod-btn').forEach(function (b) { b.classList.toggle('scelto', b.dataset.cod === PENNELLO.tipo); });
+  var a = document.getElementById('pn-aiuto');
+  if (a) a.innerHTML = PENNELLO.tipo
+    ? (PENNELLO.tipo === '__cancella' ? 'Tocca le caselle da <strong>svuotare</strong>.' : 'Tocca le caselle dove mettere <strong>' + esc(PENNELLO.tipo) + '</strong>' + (telefono() ? '' : ' (anche trascinando)') + '. Tocca di nuovo il codice per smettere.')
+    : 'Scegli un codice e tocca le caselle. Senza codice scelto, il tocco apre il dettaglio della casella.';
+  var bc = document.querySelector('.barra-codici'); if (bc) bc.classList.toggle('attiva', !!PENNELLO.tipo);
+  var g = document.getElementById('griglia'); if (g) g.classList.toggle('pennello-attivo', !!PENNELLO.tipo);
+  document.querySelectorAll('.lista-br').forEach(function (l) { l.classList.toggle('pennello-attivo', !!PENNELLO.tipo); });
+}
+
+// ---- vista mese (griglia)
+function htmlVistaMese() {
+  var oggiS = oggi(), n = 0;
+  var h = '<div class="contenitore-griglia"><table class="griglia" id="griglia"><thead><tr><th class="fisso c1">N.</th><th class="fisso c2">Grado</th><th class="fisso c3">Cognome e nome</th>'
+    + RU.giorni.map(function (g) { return '<th class="' + (g.festivo ? 'festivo' : '') + (g.data === oggiS ? ' oggi' : '') + '"><a href="' + rottaBr(RU.anno, RU.mese, 'giorno', g.data) + '">' + g.sett + '<br>' + g.giorno + '</a></th>'; }).join('')
+    + '</tr></thead><tbody>';
+  RU.mil.forEach(function (m) {
+    h += '<tr><td class="fisso c1">' + (m.stato === 'EFF' ? ++n : '<small>EXTRA</small>') + '</td><td class="fisso c2">' + esc(m.grado) + '</td>'
+      + '<td class="fisso c3"><a href="#militare/' + esc(m.id) + '" title="' + esc(m.incarico) + '">' + esc(m.cognome + ' ' + m.nome) + '</a></td>'
+      + RU.giorni.map(function (g) { return htmlCella(m, g); }).join('') + '</tr>';
+  });
+  if (!RU.mil.length) h += '<tr><td colspan="40" class="vuoto">Nessun militare in forza in questo mese.</td></tr>';
+  h += '</tbody><tfoot><tr><td class="fisso c1"></td><td class="fisso c2"></td><td class="fisso c3"><strong>Presenti in sede</strong></td>'
+    + RU.giorni.map(function (g) { return '<td class="totale" data-tot="' + g.data + '"></td>'; }).join('') + '</tr></tfoot></table></div>'
+    + '<h3>Legenda</h3><div class="legenda">' + CFG.codiciAttivi.map(function (k) { return etichetta(k.codice) + ' ' + esc(k.descrizione); }).join(' &nbsp; ') + '</div>';
+  return h;
+}
+
+// ---- vista giorno (pensata per il telefono): un militare per riga
+function giornoScelto() {
+  var p = RU.param, g = RU.giorni;
+  if (p && g.some(function (x) { return x.data === p; })) return p;
+  var o = oggi();
+  return g.some(function (x) { return x.data === o; }) ? o : g[0].data;
+}
+
+function htmlVistaGiorno() {
+  var d = giornoScelto(), info = RU.giorni.filter(function (x) { return x.data === d; })[0];
+  var ieri = piuGiorni(d, -1), domani = piuGiorni(d, 1);
+  var vai = function (s) { return rottaBr(Number(s.slice(0, 4)), Number(s.slice(5, 7)), 'giorno', s); };
+  var nomi = ['domenica', "lunedi'", "martedi'", "mercoledi'", "giovedi'", "venerdi'", 'sabato'];
+  var presenti = 0;
+  var righe = RU.mil.filter(function (m) { return inForzaIl(m, d); }).map(function (m) {
+    var lista = (RU.celle[m.id + '|' + d] || []).filter(function (i) { return i.c !== 'NOTA'; });
+    if (!(info.festivo && !lista.length) && lista.every(function (i) { return si(codice(i.c).presente_in_sede); })) presenti++;
+    return htmlRiga(m, d, nomeMil(m));
+  }).join('');
+  return '<div class="giorno-nav"><a class="bottone" href="' + vai(ieri) + '">&larr;</a>'
+    + '<div class="giorno-titolo' + (info.festivo ? ' festivo' : '') + '"><strong>' + nomi[giornoSett(d)] + ' ' + it(d) + '</strong>'
+    + '<input type="date" value="' + d + '" onchange="if(this.value) location.hash=\'' + 'ruolino/\'+Number(this.value.slice(0,4))+\'/\'+Number(this.value.slice(5,7))+\'/giorno/\'+this.value"></div>'
+    + '<a class="bottone" href="' + vai(domani) + '">&rarr;</a></div>'
+    + '<p class="aiuto">In sede: <strong>' + presenti + '</strong>' + (info.festivo ? ' (giorno festivo: conta solo chi ha un servizio o un\'attivita\')' : '') + '</p>'
+    + '<!--barra--><div class="lista-br">' + (righe || '<p class="vuoto">Nessun militare in forza.</p>') + '</div>';
+}
+
+// ---- vista militare: il mese di una persona, un giorno per riga
+function htmlVistaMilitare() {
+  var id = RU.param || (RU.mil[0] && RU.mil[0].id);
+  var m = RU.militari.filter(function (x) { return x.id === id; })[0];
+  var sceltaM = '<select class="scelta-militare" onchange="location.hash=\'' + rottaBr(RU.anno, RU.mese, 'militare').slice(1) + '/\'+this.value">'
+    + opzioni(RU.mil.map(function (x) { return [x.id, nomeMil(x)]; }), id) + '</select>';
+  if (!m) return '<p>' + sceltaM + '</p><p class="vuoto">Nessun militare.</p>';
+  var nomi = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+  return '<div class="giorno-nav">' + sceltaM + ' <a class="bottone" href="#militare/' + esc(m.id) + '">Scheda</a></div>'
+    + '<!--barra--><div class="lista-br">' + RU.giorni.map(function (g) {
+      return htmlRiga(m, g.data, '<span class="' + (g.festivo ? 'festivo-txt' : '') + '">' + nomi[giornoSett(g.data)] + ' ' + g.giorno + '</span>');
+    }).join('') + '</div>';
+}
+
+/** Una riga delle viste Giorno e Militare (si tocca come una casella della griglia). */
+function htmlRiga(m, data, etich) {
+  var lista = RU.celle[m.id + '|' + data] || [];
+  var reali = lista.filter(function (i) { return i.c !== 'NOTA'; });
+  var note = lista.filter(function (i) { return i.n; }).length;
+  var fuori = !inForzaIl(m, data);
+  return '<div class="riga-br cella' + (fuori ? ' fuori' : '') + '" data-m="' + esc(m.id) + '" data-d="' + data + '">'
+    + '<span class="riga-nome">' + etich + '</span><span class="riga-codici">'
+    + (reali.map(function (i) { return etichetta(i.c, i.l); }).join(' ') || '<span class="vuoto">' + (fuori ? 'non in forza' : '—') + '</span>')
+    + (note ? ' <span class="nota-riga" title="note">●</span>' : '') + '</span></div>';
+}
+
+function inForzaIl(m, d) {
+  if (m.data_ingresso && d < m.data_ingresso) return false;
+  if (m.data_uscita && d > m.data_uscita) return false;
+  return true;
+}
+
+function htmlCella(m, g) {
+  var lista = RU.celle[m.id + '|' + g.data] || [];
+  var reali = lista.filter(function (i) { return i.c !== 'NOTA'; });
+  var k = reali.length ? codice(reali[0].c) : null;
+  var note = lista.filter(function (i) { return i.n; }).map(function (i) { return i.n; });
+  var titolo = reali.map(function (i) { return i.c + (i.l ? ' ' + i.l : '') + ' - ' + codice(i.c).descrizione; }).concat(note).join('\n');
+  var cls = 'cella' + (g.festivo ? ' festivo' : '') + (inForzaIl(m, g.data) ? '' : ' fuori');
+  return '<td class="' + cls + '" data-m="' + esc(m.id) + '" data-d="' + g.data + '"' + (k ? ' style="background:' + esc(k.colore_sfondo) + ';color:' + esc(k.colore_testo) + '"' : '')
+    + (titolo ? ' title="' + esc(titolo) + '"' : '') + '>' + esc(reali.map(function (i) { return i.c + (i.l ? ' ' + i.l : ''); }).join(' + '))
+    + (note.length ? '<span class="nota">●</span>' : '') + '</td>';
+}
+
+function aggiornaTotali() {
+  if (!document.querySelector('td[data-tot]')) return;
+  RU.giorni.forEach(function (g) {
+    var n = 0;
+    RU.mil.forEach(function (m) {
+      if (!inForzaIl(m, g.data)) return;
+      var lista = (RU.celle[m.id + '|' + g.data] || []).filter(function (i) { return i.c !== 'NOTA'; });
+      if (g.festivo && !lista.length) return; // festivi: in sede solo chi ha un servizio o un'attivita'
+      if (lista.every(function (i) { return si(codice(i.c).presente_in_sede); })) n++;
+    });
+    var td = document.querySelector('td[data-tot="' + g.data + '"]');
+    if (td) td.textContent = n;
+  });
+}
+
+/** dopo un servizio con smonto (guardie) aggiorna anche la casella del giorno successivo */
+function aggiornaSmonto(mId, data, cod) {
+  if (!si(codice(cod).rc_dopo)) return;
+  aggiornaGiornoDopo(mId, data);
+}
+
+function sostituisciCella(mId, data, lista) {
+  RU.celle[mId + '|' + data] = lista;
+  var el = document.querySelector('.cella[data-m="' + mId + '"][data-d="' + data + '"]');
+  var m = RU.militari.filter(function (x) { return x.id === mId; })[0];
+  var g = RU.giorni.filter(function (x) { return x.data === data; })[0];
+  if (el && m && g) {
+    if (el.tagName === 'TD') el.outerHTML = htmlCella(m, g);
+    else el.outerHTML = htmlRiga(m, data, el.querySelector('.riga-nome').innerHTML);
+  }
+  aggiornaTotali();
+  salvaRUinMemoria();
+}
+
+// ---- "Annulla": le ultime modifiche alle caselle si possono annullare per qualche secondo
+var ANNULLA = { celle: {}, timer: null };
+
+function copiaCella(mId, data) {
+  return (RU.celle[mId + '|' + data] || []).map(function (i) { return { c: i.c, l: i.l || '', q: i.q === undefined ? '' : i.q, n: i.n || '' }; });
+}
+
+/** Annota com'era una casella prima della modifica (e il giorno dopo, se c'e' di mezzo una guardia con smonto). */
+function ricordaPerAnnulla(mId, data, codici) {
+  var aggiungi = function (d) {
+    var k = mId + '|' + d;
+    if (!ANNULLA.celle[k] && RU.giorni.some(function (g) { return g.data === d; })) ANNULLA.celle[k] = { militare_id: mId, data: d, voci: copiaCella(mId, d) };
+  };
+  aggiungi(data);
+  var smonto = (codici || []).concat((RU.celle[mId + '|' + data] || []).map(function (i) { return i.c; }))
+    .some(function (c) { return c && si(codice(c).rc_dopo); });
+  if (smonto) aggiungi(piuGiorni(data, 1));
+}
+
+function mostraAnnulla() {
+  var n = Object.keys(ANNULLA.celle).length;
+  var bar = document.getElementById('barra-annulla');
+  if (!bar) { bar = document.createElement('div'); bar.id = 'barra-annulla'; document.body.appendChild(bar); }
+  if (!n) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.innerHTML = '<span>' + (n === 1 ? '1 casella modificata' : n + ' caselle modificate') + '</span><button onclick="annullaModifiche()">Annulla</button>';
+  clearTimeout(ANNULLA.timer);
+  ANNULLA.timer = setTimeout(function () { ANNULLA.celle = {}; mostraAnnulla(); }, 12000);
+}
+
+function annullaModifiche() {
+  var celle = Object.keys(ANNULLA.celle).map(function (k) {
+    var c = ANNULLA.celle[k];
+    return { militare_id: c.militare_id, data: c.data, voci: c.voci.map(function (v) { return { codice: v.c, localita: v.l, quantita: v.q, note: v.n }; }) };
+  });
+  ANNULLA.celle = {}; mostraAnnulla();
+  if (!celle.length) return;
+  api('celleRipristina', { celle: celle }).then(function (n) { avviso('Annullate le modifiche su ' + n + ' caselle'); ricarica(); });
+}
+
+// ---- inserimento con la barra dei codici: la casella cambia subito, il salvataggio avviene dietro le quinte
+var dipingendo = false;
+
+function applicaPennello(el) {
+  var tipo = PENNELLO.tipo;
+  if (!tipo || el.dataset.inCorso || el.classList.contains('fuori')) return;
+  var mId = el.dataset.m, data = el.dataset.d;
+  var prima = (RU.celle[mId + '|' + data] || []).slice();
+  ricordaPerAnnulla(mId, data, [tipo]);
+  var loc = String(PENNELLO.loc || '').toUpperCase();
+  var provvisoria = tipo === '__cancella' ? [] : (PENNELLO.sost ? [] : prima.filter(function (x) { return x.c !== tipo; }))
+    .concat(tipo === '__cancella' ? [] : [{ id: '', m: mId, d: data, c: tipo, l: loc, n: '' }]);
+  sostituisciCella(mId, data, provvisoria);
+  var elProv = document.querySelector('.cella[data-m="' + mId + '"][data-d="' + data + '"]');
+  if (elProv) { elProv.dataset.inCorso = '1'; elProv.classList.add('in-salvataggio'); }
+  var base = { militare_id: mId, data: data };
+  var p = tipo === '__cancella' ? api('cellaElimina', base, true).then(function (l) { aggiornaGiornoDopo(mId, data); return l; })
+    : api('cellaSalva', Object.assign(base, { codice: tipo, localita: loc, sostituisci: PENNELLO.sost }), true);
+  mostraAnnulla();
+  p.then(function (lista) {
+    if (tipo !== '__cancella' && si(codice(tipo).perde_forza)) { sceltaCodice(tipo); avviso('Non piu\' in forza da quel giorno'); ricarica(); return; }
+    sostituisciCella(mId, data, lista);
+    if (tipo !== '__cancella') aggiornaSmonto(mId, data, tipo);
+  }, function () { sostituisciCella(mId, data, prima); delete ANNULLA.celle[mId + '|' + data]; mostraAnnulla(); });
+}
+
+function collegaGriglia() {
+  var area = document.getElementById('griglia') || document.querySelector('.lista-br');
+  if (!area) return;
+  area.addEventListener('mousedown', function (ev) {
+    var el = ev.target.closest('.cella');
+    if (!el || !PENNELLO.tipo || ev.target.closest('a')) return;
+    ev.preventDefault(); dipingendo = true; applicaPennello(el);
+  });
+  area.addEventListener('mouseover', function (ev) {
+    if (!dipingendo) return;
+    var el = ev.target.closest('.cella');
+    if (el) applicaPennello(el);
+  });
+  document.addEventListener('mouseup', function () { dipingendo = false; });
+  area.addEventListener('click', function (ev) {
+    var el = ev.target.closest('.cella');
+    if (!el || PENNELLO.tipo || ev.target.closest('a')) return;
+    dialogoCella(el.dataset.m, el.dataset.d);
+  });
+}
+
+function dialogoCella(mId, data) {
+  var m = RU.militari.filter(function (x) { return x.id === mId; })[0];
+  api('cella', { militare_id: mId, data: data }, true).then(function (lista) {
+    RU.celle[mId + '|' + data] = lista;
+    RU.dlg = { m: mId, d: data };
+    var mod = puo('Operatore') && !RU.archiviato;
+    var h = '<h2>' + esc(nomeMil(m)) + ' - ' + it(data) + '</h2><table class="tabella">'
+      + (lista.length && mod ? '<tr><th>' + selTutti('voci') + '</th><th>Codice</th><th>Quantita\'</th><th>Note</th><th class="col-mod">Modificato</th><th></th></tr>' : '')
+      + (lista.map(function (i) {
+        return '<tr>' + (mod ? '<td>' + sel('voci', i.id) + '</td>' : '') + '<td>' + etichetta(i.c, i.l) + '</td><td>' + esc(num(i.q)) + '</td><td>' + esc(i.n) + '</td><td class="piccolo col-mod">' + esc((i.da || '') + ' ' + (i.il || '')) + '</td>'
+          + (mod ? '<td><button class="bottone" onclick="modificaVoce(' + J(i.id) + ')">✎ Modifica</button></td>' : '') + '</tr>';
+      }).join('') || '<tr><td class="vuoto">Nessun codice inserito.</td></tr>') + '</table>'
+      + (mod && lista.length ? '<p>' + bottoneSel('voci', 'Elimina selezionati', 'eliminaVoci') + '</p>' : '');
+    if (mod) {
+      h += '<h3 id="titolo-form">Aggiungi un codice</h3>' + modulo('', [
+        { n: 'codice', l: 'Codice', t: 'select', o: CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; }) },
+        { n: 'al', l: 'Fino al (compreso)', t: 'date', aiuto: 'Facoltativo: per mettere lo stesso codice su piu\' giorni (es. licenza dal ' + it(data) + ' al ...). Per il congedo non serve: vale da questo giorno in avanti.' },
+        { n: 'escludiFestivi', l: 'Nel periodo escludi sabati, domeniche e festivi', t: 'checkbox' },
+        { n: 'localita', l: "Localita'" },
+        { n: 'quantita', l: "Quantita' scalata (es. ore)", aiuto: "Vuoto = valore automatico (orario di lavoro o quantita' del codice)" },
+        { n: 'note', l: 'Note', t: 'textarea' },
+        { n: 'sostituisci', l: 'Sostituisci gli altri codici del giorno (o del periodo)', t: 'checkbox' }
+      ], '<button class="primario" id="salva">Salva</button> <button type="button" class="pericolo" onclick="svuotaCella(' + J(mId) + ',' + J(data) + ')">Svuota casella</button>')
+        + '<h3>Cancella un periodo</h3><div class="naviga">Cancella tutti i codici dal ' + it(data) + ' al <input type="date" id="canc-al"> '
+        + '<button type="button" id="canc-btn" class="bottone pericolo" onclick="cancellaPeriodoDa(' + J(mId) + ',' + J(data) + ')">Cancella</button></div>'
+        + '<p class="aiuto">Lascia la data vuota per cancellare da questo giorno in avanti.</p>';
+    }
+    apriDialogo(h);
+    RU.dlg.id = '';
+    if (mod) alSalva(function (d) {
+      d.militare_id = mId; d.data = data; d.sostituisci = d.sostituisci === 'SI'; d.escludiFestivi = d.escludiFestivi === 'SI';
+      var vecchio = RU.dlg.id ? (RU.celle[mId + '|' + data] || []).filter(function (x) { return x.id === RU.dlg.id; })[0] : null;
+      if (vecchio) { d.id = vecchio.id; d.al = ''; }
+      if (d.al && d.al < data) { avviso('La data finale e\' precedente al giorno della casella', true); return; }
+      var perde = si(codice(d.codice).perde_forza);
+      if (!d.al && !perde) ricordaPerAnnulla(mId, data, [d.codice]);
+      return api('cellaSalva', d).then(function (l) {
+        if (!d.al && !perde) mostraAnnulla();
+        if (d.al || perde) {
+          chiudiDialogo(); avviso(perde ? nomeMil(m) + ': non e\' piu\' in forza dal ' + it(data) : 'Periodo inserito'); ricarica();
+        } else {
+          sostituisciCella(mId, data, l);
+          if (si(codice(d.codice).rc_dopo) || (vecchio && si(codice(vecchio.c).rc_dopo))) aggiornaGiornoDopo(mId, data);
+          dialogoCella(mId, data);
+        }
+      });
+    });
+  });
+}
+
+/** Carica un elemento gia' inserito nel modulo per modificarlo. */
+function modificaVoce(id) {
+  var v = (RU.celle[RU.dlg.m + '|' + RU.dlg.d] || []).filter(function (x) { return x.id === id; })[0];
+  if (!v) return;
+  RU.dlg.id = id;
+  var f = document.getElementById('modulo');
+  f.codice.value = v.c; f.localita.value = v.l || ''; f.quantita.value = v.q || ''; f.note.value = v.n || '';
+  f.al.value = ''; f.al.disabled = true; f.escludiFestivi.disabled = true; f.sostituisci.checked = false;
+  document.getElementById('titolo-form').innerHTML = 'Modifica ' + etichetta(v.c, v.l)
+    + ' <button type="button" class="link piccolo" onclick="annullaModifica()">annulla modifica</button>';
+  document.getElementById('salva').textContent = 'Salva modifica';
+  f.codice.focus();
+}
+function annullaModifica() {
+  RU.dlg.id = '';
+  var f = document.getElementById('modulo');
+  f.reset(); f.al.disabled = false; f.escludiFestivi.disabled = false;
+  document.getElementById('titolo-form').textContent = 'Aggiungi un codice';
+  document.getElementById('salva').textContent = 'Salva';
+}
+function aggiornaGiornoDopo(mId, data) {
+  var dopo = piuGiorni(data, 1);
+  if (!RU.giorni.some(function (g) { return g.data === dopo; })) return;
+  api('cella', { militare_id: mId, data: dopo }, true).then(function (l) { sostituisciCella(mId, dopo, l); });
+}
+
+function eliminaVoci(ids) {
+  var mId = RU.dlg.m, data = RU.dlg.d;
+  if (!ids.length || !confirm('Eliminare ' + ids.length + ' codici?')) return;
+  ricordaPerAnnulla(mId, data);
+  api('cellaElimina', { militare_id: mId, data: data, ids: ids }).then(function (l) { chiudiDialogo(); sostituisciCella(mId, data, l); aggiornaGiornoDopo(mId, data); mostraAnnulla(); });
+}
+function cancellaPeriodoDa(mId, data) {
+  var al = document.getElementById('canc-al').value;
+  if (al && al < data) { avviso('La data finale e\' precedente al giorno della casella', true); return; }
+  if (!confirm('Cancellare tutti i codici dal ' + it(data) + (al ? ' al ' + it(al) : ' in avanti') + '?')) return;
+  api('periodoElimina', { militari: [mId], dal: data, al: al }).then(function (n) { chiudiDialogo(); avviso('Cancellati ' + n + ' codici'); ricarica(); });
+}
+function svuotaCella(mId, data) {
+  if (!confirm('Cancellare tutti i codici di questa casella?')) return;
+  ricordaPerAnnulla(mId, data);
+  api('cellaElimina', { militare_id: mId, data: data }).then(function (l) { chiudiDialogo(); sostituisciCella(mId, data, l); aggiornaGiornoDopo(mId, data); mostraAnnulla(); });
+}
+
+/** opz: { codice, titolo, restaQui (dopo il salvataggio resta sulla pagina) } */
+function dialogoPeriodo(mId, opz) {
+  opz = opz || {};
+  var caricaMil = RU ? Promise.resolve(RU.militari) : api('militari');
+  caricaMil.then(function (militari) {
+    apriDialogo(modulo(opz.titolo || 'Periodo: inserisci o cancella', [
+      { n: 'azione', l: 'Operazione', t: 'select', o: [['inserisci', 'Inserisci un codice nel periodo'], ['cancella', 'Cancella i codici nel periodo']] },
+      { n: 'militari', l: 'Militari', t: 'multi', o: militari.filter(function (m) { return m.stato !== 'PER'; }).map(function (m) { return [m.id, nomeMil(m)]; }), v: mId ? [mId] : [], aiuto: "Tenere premuto CTRL per selezionarne piu' di uno." },
+      { n: 'codice', l: 'Codice', t: 'select', o: [['', '(cancella: tutti i codici)']].concat(CFG.codiciAttivi.map(function (k) { return [k.codice, k.codice + (k.descrizione ? ' - ' + k.descrizione : '')]; })), v: opz.codice || (CFG.codiciAttivi.length ? CFG.codiciAttivi[0].codice : '') },
+      { n: 'localita', l: "Localita'" },
+      { n: 'dal', l: 'Dal', t: 'date', req: true, v: oggi() },
+      { n: 'al', l: 'Al (compreso)', t: 'date', v: oggi(), aiuto: 'Per il congedo non serve: vale dal giorno indicato in avanti. Per la cancellazione, vuoto = dal giorno indicato in avanti.' },
+      { n: 'escludiFestivi', l: 'Escludi sabati, domeniche e festivi', t: 'checkbox' },
+      { n: 'sostituisci', l: "Sostituisci i codici gia' presenti in quei giorni", t: 'checkbox' },
+      { n: 'note', l: 'Note', t: 'textarea' }
+    ]));
+    alSalva(function (d) {
+      d.escludiFestivi = d.escludiFestivi === 'SI'; d.sostituisci = d.sostituisci === 'SI';
+      var vai = function () { if (opz.restaQui) { ricarica(); return; } var p = d.dal.split('-'); location.hash = 'ruolino/' + Number(p[0]) + '/' + Number(p[1]); ricarica(); };
+      if (!d.militari.length) { avviso('Scegli almeno un militare', true); return; }
+      if (d.azione === 'cancella') {
+        if (!confirm('Cancellare ' + (d.codice || 'tutti i codici') + ' dal ' + it(d.dal) + (d.al ? ' al ' + it(d.al) : ' in avanti') + ' per ' + d.militari.length + ' militari?')) return;
+        return api('periodoElimina', d).then(function (n) { chiudiDialogo(); avviso('Cancellati ' + n + ' codici'); vai(); });
+      }
+      if (!d.codice) { avviso('Scegli il codice da inserire', true); return; }
+      return api('periodo', d).then(function (n) {
+        chiudiDialogo();
+        avviso(si(codice(d.codice).perde_forza) ? n + ' militari non piu\' in forza dal ' + it(d.dal) : 'Inseriti ' + n + ' giorni di ' + d.codice);
+        vai();
+      });
+    });
+  });
+}
+
+/** Salva sul dispositivo un file arrivato dal server in base64. */
+function scaricaFile(nome, mime, base64) {
+  var bin = atob(base64), byte = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) byte[i] = bin.charCodeAt(i);
+  var url = URL.createObjectURL(new Blob([byte], { type: mime || 'application/octet-stream' }));
+  var a = document.createElement('a');
+  a.href = url; a.download = nome; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+}
+
+function esporta(anno, mese) {
+  api('esporta', { anno: anno, mese: mese }).then(function (r) {
+    scaricaFile(r.nome, r.mime, r.base64);
+    avviso('Scaricato ' + r.nome + ' (una copia e\' anche nella cartella Esportazioni)');
+  });
+}
+
+function scaricaDocumento(idScadenza) {
+  api('documento', { id: idScadenza }).then(function (r) { scaricaFile(r.nome, r.mime, r.base64); });
+}
+
+// ---------------------------------------------------------------- militari
+var MIL_CACHE = [];
+function vistaMilitari() {
+  leggiDati('militari', {}, function (lista, agg) {
+    MIL_CACHE = lista;
+    if (agg && document.getElementById('tab-mil')) { filtraMilitari(); return; }
+    main('<div class="intestazione"><h1>Elenco personale</h1><div class="naviga"><input id="cerca" placeholder="cerca cognome, nome, incarico, impiego" oninput="filtraMilitari()">'
+      + '<label class="check"><input type="checkbox" id="persi" onchange="filtraMilitari()"> mostra persi dalla forza</label>'
+      + (puo('Amministratore') ? bottoneSel('mil', 'Elimina selezionati', 'eliminaMilitari') : '')
+      + (puo('Operatore') ? '<button class="bottone primario" onclick="dialogoMilitare()">+ Nuovo militare</button>' : '') + '</div></div>'
+      + '<table class="tabella" id="tab-mil"></table>');
+    filtraMilitari();
+  });
+}
+function filtraMilitari() {
+  var q = (document.getElementById('cerca').value || '').toUpperCase(), persi = document.getElementById('persi').checked;
+  var righe = MIL_CACHE.filter(function (m) {
+    return (persi || m.stato !== 'PER') && (!q || (m.cognome + ' ' + m.nome + ' ' + m.incarico + ' ' + (m.impiego || '')).toUpperCase().indexOf(q) >= 0);
+  });
+  var adm = puo('Amministratore');
+  document.getElementById('tab-mil').innerHTML = '<tr>' + (adm ? '<th>' + selTutti('mil') + '</th>' : '') + '<th>Grado</th><th>Cognome</th><th>Nome</th><th>Incarico</th><th>Impiego</th><th>Patenti</th><th>Telefono</th><th>Stato</th><th></th></tr>'
+    + (righe.map(function (m) {
+      return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '">' + (adm ? '<td>' + sel('mil', m.id) + '</td>' : '') + '<td>' + esc(m.grado) + '</td><td><a href="#militare/' + esc(m.id) + '"><strong>' + esc(m.cognome) + '</strong></a></td><td>' + esc(m.nome)
+        + '</td><td>' + esc(m.incarico) + '</td><td>' + esc(m.impiego) + '</td><td>' + esc(m.patenti) + '</td><td>' + esc(m.telefono) + '</td><td>' + esc(STATI_MIL[m.stato] || m.stato) + '</td><td>'
+        + (puo('Operatore') ? '<button class="link" onclick="dialogoMilitare(' + J(m.id) + ')">modifica</button>' : '') + '</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="vuoto">Nessun militare. Usa "Importa Excel" o "+ Nuovo militare".</td></tr>');
+}
+
+function dialogoMilitare(id) {
+  var m = MIL_CACHE.filter(function (x) { return x.id === id; })[0] || { stato: 'EFF' };
+  apriDialogo(modulo(id ? 'Modifica militare' : 'Nuovo militare', [
+    { n: 'grado', l: 'Grado', t: 'select', o: CFG.gradi.map(function (g) { return g.sigla; }), v: m.grado },
+    { n: 'cognome', l: 'Cognome', req: true, v: m.cognome }, { n: 'nome', l: 'Nome', v: m.nome },
+    { n: 'incarico', l: 'Posizione / incarico', v: m.incarico },
+    { n: 'impiego', l: 'Impiego', v: m.impiego, aiuto: 'Es. Strade Sicure, Leonte, corso...' },
+    { n: 'patenti', l: 'Patenti', v: m.patenti },
+    { n: 'telefono', l: 'Telefono', v: m.telefono },
+    { n: 'stato', l: 'Stato', t: 'select', o: Object.keys(STATI_MIL).map(function (k) { return [k, STATI_MIL[k]]; }), v: m.stato },
+    { n: 'data_ingresso', l: 'In forza dal', t: 'date', v: m.data_ingresso },
+    { n: 'data_uscita', l: 'Perso dalla forza il', t: 'date', v: m.data_uscita, aiuto: "Ultimo giorno in forza: dopo questa data non compare piu' nel brogliaccio." },
+    { n: 'ordine', l: 'Posizione tra i pari grado', t: 'number', v: m.ordine, aiuto: "L'elenco e' ordinato per grado; questo numero decide l'ordine tra militari dello stesso grado (vuoto = in fondo, in ordine alfabetico)." },
+    { n: 'note', l: 'Note', t: 'textarea', v: m.note }
+  ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
+    + (id && puo('Amministratore') ? ' <button type="button" class="pericolo" onclick="eliminaMilitari([' + J(id) + '])">Elimina</button>' : '')));
+  alSalva(function (d) {
+    d.id = id || '';
+    return api('militareSalva', d).then(function (nuovoId) { chiudiDialogo(); avviso('Salvato'); location.hash = 'militare/' + nuovoId; ricarica(); });
+  });
+}
+
+function eliminaMilitari(ids) {
+  if (!ids.length) return;
+  if (!confirm('Eliminare definitivamente ' + (ids.length > 1 ? ids.length + ' militari' : 'il militare') + ' con brogliaccio, licenze e scadenze?\nPer chi va in congedo o viene trasferito conviene usare il codice CONGEDO o la data "perso dalla forza".')) return;
+  api('militareElimina', { ids: ids }).then(function (n) { chiudiDialogo(); avviso('Eliminati ' + n + ' militari'); MIL_CACHE = []; if (location.hash === '#militari') ricarica(); else location.hash = 'militari'; });
+}
+
+function vistaMilitare(id, anno) {
+  anno = Number(anno) || Number(oggi().slice(0, 4));
+  Promise.all([api('militareScheda', { id: id, anno: anno, oggi: oggi() }), MIL_CACHE.length ? Promise.resolve(MIL_CACHE) : api('militari', {}, true)]).then(function (res) {
+    var r = res[0], m = r.militare; MIL_CACHE = res[1];
+    var mod = puo('Operatore');
+    var h = '<div class="intestazione"><h1>' + esc(nomeMil(m)) + '</h1><div class="naviga">'
+      + (mod ? '<button class="bottone" onclick="dialogoMilitare(' + J(m.id) + ')">Modifica anagrafica</button>' : '')
+      + '</div></div>' + htmlAzioniRapide(m, mod) + htmlMeseMilitare(m, r) + '<div class="colonne"><section class="riquadro"><h2>Anagrafica</h2><dl class="dati">'
+      + [['Incarico', m.incarico], ['Impiego', m.impiego], ['Patenti', m.patenti], ['Telefono', m.telefono], ['Stato', STATI_MIL[m.stato]], ['In forza dal', it(m.data_ingresso)], ['Perso dalla forza', it(m.data_uscita)], ['Note', m.note]]
+        .map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + (esc(x[1]) || '-') + '</dd>'; }).join('')
+      + '</dl></section><section class="riquadro"><h2>Licenze e recuperi ' + anno + ' <a class="piccolo" href="#militare/' + esc(m.id) + '/' + (anno - 1) + '">&larr; ' + (anno - 1) + '</a><a class="piccolo" href="#militare/' + esc(m.id) + '/' + (anno + 1) + '">' + (anno + 1) + ' &rarr;</a></h2>'
+      + '<table class="tabella"><tr><th>Contatore</th><th>Spettante</th><th>Goduto</th><th>Residuo</th><th></th></tr>'
+      + CFG.contatori.filter(function (c) { return si(c.attivo); }).map(function (c) {
+        var v = r.contatori[c.nome] || { spettante: null, goduto: 0 }, res = (v.spettante || 0) - v.goduto;
+        return '<tr><td>' + esc(c.nome) + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')</td><td>' + num(v.spettante) + '</td><td>' + num(v.goduto) + '</td><td class="' + (res < 0 ? 'negativo' : '') + '"><strong>' + num(res) + '</strong></td><td>'
+          + (mod ? '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(c.nome) + ',' + anno + ',' + J((v.spettante === null ? '' : v.spettante)) + ')">imposta</button> | <button class="link" onclick="dialogoMovimento(' + J(m.id) + ',' + J(c.nome) + ',' + anno + ')">movimento</button>' : '') + '</td></tr>';
+      }).join('') + '</table>'
+      + (Object.keys(r.servizi || {}).length ? '<h3>Servizi ' + anno + '</h3><p>' + Object.keys(r.servizi).sort().map(function (c) { return etichetta(c) + ' <strong>' + r.servizi[c] + '</strong>'; }).join(' &nbsp; ') + '</p>' : '');
+    var mov = r.movimenti.filter(function (x) { return String(x.anno) === String(anno); });
+    if (mov.length) {
+      h += '<h3>Movimenti manuali ' + (mod ? bottoneSel('mov', 'Elimina selezionati', 'eliminaMovimenti') : '') + '</h3><table class="tabella">'
+        + (mod ? '<tr><th>' + selTutti('mov') + '</th><th>Data</th><th>Contatore</th><th>Quantita\'</th><th>Motivo</th></tr>' : '') + mov.map(function (x) {
+        return '<tr>' + (mod ? '<td>' + sel('mov', x.id) + '</td>' : '') + '<td>' + it(x.data) + '</td><td>' + esc(x.contatore) + '</td><td>' + num(x.quantita) + '</td><td>' + esc(x.note) + '</td></tr>';
+      }).join('') + '</table>';
+    }
+    h += '</section></div><section class="riquadro"><h2>Scadenze ' + (mod ? '<button class="link piccolo" onclick="dialogoScadenza(null,' + J(m.id) + ')">+ registra</button> ' + bottoneSel('scad', 'Elimina selezionate', 'eliminaScadenze') : '') + '</h2>'
+      + '<table class="tabella"><tr>' + (mod ? '<th>' + selTutti('scad') + '</th>' : '') + '<th>Tipo</th><th>Eseguita</th><th>Scadenza</th><th>Esito</th><th>Note</th><th>Documento</th><th></th></tr>'
+      + (r.scadenze.map(function (s) {
+        return '<tr class="' + (s.stato === 'storico' ? 'spento' : 'st-' + s.stato) + '">' + (mod ? '<td>' + sel('scad', s.id) + '</td>' : '') + '<td>' + esc(s.tipo) + '</td><td>' + it(s.data_esecuzione) + '</td><td>' + it(s.data_scadenza) + '</td><td>' + esc(s.esito) + '</td><td>' + esc(s.note) + '</td><td>'
+          + (s.documento_url ? '<button class="link link-doc" onclick="scaricaDocumento(' + J(s.id) + ')">' + esc(s.documento_nome || 'scarica') + '</button>' : '') + '</td><td>'
+          + (mod ? '<button class="link" onclick="dialogoScadenza(' + J(s) + ')">modifica</button>' : '') + '</td></tr>';
+      }).join('') || '<tr><td colspan="8" class="vuoto">Nessuna scadenza registrata.</td></tr>') + '</table></section>'
+      + '<section class="riquadro"><h2>Impieghi (ultimi 30 giorni e prossimi 60)</h2><table class="tabella">'
+      + (r.impieghi.map(function (i) { return '<tr><td>' + it(i.data) + '</td><td>' + etichetta(i.codice, i.localita) + '</td><td>' + esc(i.note) + '</td></tr>'; }).join('') || '<tr><td class="vuoto">Nessun impiego nel periodo.</td></tr>')
+      + '</table></section>';
+    main(h);
+  });
+}
+
+function codiceCon(prop, preferito) {
+  if (preferito && CFG.codiciMap[preferito] && si(CFG.codiciMap[preferito].attivo)) return preferito;
+  var k = CFG.codiciAttivi.filter(function (x) { return si(x[prop]); })[0];
+  return k ? k.codice : '';
+}
+
+function htmlAzioniRapide(m, mod) {
+  var o = oggi(), a = Number(o.slice(0, 4)), me = Number(o.slice(5, 7));
+  var h = '<div class="azioni-rapide">';
+  if (mod && m.stato !== 'PER') {
+    var lic = codiceCon('contatore', 'LIC ORD'), cong = codiceCon('perde_forza', 'CONGEDO');
+    h += '<button class="azione" onclick="dialogoPeriodo(' + J(m.id) + ',{codice:' + J(lic) + ',titolo:\'Metti in licenza\',restaQui:true})">🏖️ Metti in licenza</button>'
+      + '<button class="azione" onclick="dialogoScadenza(null,' + J(m.id) + ',' + J(tipoPefo()) + ')">🏃 Registra PEFO</button>'
+      + '<button class="azione" onclick="dialogoPeriodo(' + J(m.id) + ',{titolo:\'Inserisci un periodo\',restaQui:true})">📅 Inserisci periodo</button>'
+      + (cong ? '<button class="azione" onclick="dialogoCongedo(' + J(m.id) + ',' + J(cong) + ')">🎖️ Congedo</button>' : '');
+  }
+  h += '<a class="azione" href="' + rottaBr(a, me, 'militare', m.id) + '">🗓️ Vedi il suo mese</a>';
+  if (m.telefono) h += '<a class="azione" href="tel:' + esc(String(m.telefono).replace(/[^0-9+]/g, '')) + '">📞 Chiama</a>';
+  return h + '</div>';
+}
+
+function tipoPefo() {
+  var t = CFG.tipiScadenza.filter(function (x) { return /PEFO/i.test(x.nome); })[0];
+  return t ? t.nome : '';
+}
+
+function dialogoCongedo(mId, cod) {
+  apriDialogo(modulo('Congedo', [
+    { n: 'dal', l: 'In congedo dal', t: 'date', req: true, v: oggi(), aiuto: 'Da quel giorno il militare non e\' piu\' in forza.' },
+    { n: 'note', l: 'Note', t: 'textarea' }
+  ]));
+  alSalva(function (d) {
+    if (!confirm('Confermi il congedo dal ' + it(d.dal) + '?')) return;
+    return api('periodo', { militari: [mId], codice: cod, dal: d.dal, al: d.dal, localita: '', note: d.note, escludiFestivi: false, sostituisci: true })
+      .then(function () { chiudiDialogo(); avviso('Congedo registrato'); RU = null; MIL_CACHE = []; ricarica(); });
+  });
+}
+
+/** Il mese in corso del militare, in piccolo: un quadratino colorato per giorno */
+function htmlMeseMilitare(m, r) {
+  if (!r.mese) return '';
+  var o = oggi(), a = Number(o.slice(0, 4)), me = Number(o.slice(5, 7));
+  var per = {};
+  r.mese.forEach(function (i) { if (i.c !== 'NOTA') (per[i.d] = per[i.d] || []).push(i); });
+  var ultimo = new Date(a, me, 0).getDate(), h = '<section class="riquadro"><h2>' + MESI[me] + ' ' + a + ' <a class="piccolo" href="' + rottaBr(a, me, 'militare', m.id) + '">apri &rarr;</a></h2><div class="mini-mese">';
+  var nomi = ['D', 'L', 'M', 'M', 'G', 'V', 'S'], vuoti = (giornoSett(a + '-' + pad(me) + '-01') + 6) % 7;
+  for (var v = 0; v < vuoti; v++) h += '<span></span>';
+  for (var g = 1; g <= ultimo; g++) {
+    var d = a + '-' + pad(me) + '-' + pad(g), l = per[d] || [], k = l.length ? codice(l[0].c) : null, gs = giornoSett(d);
+    h += '<a class="mini-g' + (d === o ? ' oggi' : '') + (gs === 0 || gs === 6 ? ' fest' : '') + '" href="' + rottaBr(a, me, 'giorno', d) + '"'
+      + (k ? ' style="background:' + esc(k.colore_sfondo) + ';color:' + esc(k.colore_testo) + '"' : '')
+      + ' title="' + esc(it(d) + (l.length ? ': ' + l.map(function (i) { return i.c + (i.l ? ' ' + i.l : ''); }).join(' + ') : '')) + '">'
+      + '<small>' + nomi[gs] + g + '</small><span>' + esc(l.length ? l[0].c : '') + '</span></a>';
+  }
+  return h + '</div></section>';
+}
+
+// ---------------------------------------------------------------- licenze
+function dialogoSpettanza(mId, contatore, anno, valore) {
+  apriDialogo(modulo('Spettanza ' + contatore + ' ' + anno, [
+    { n: 'quantita', l: "Quantita' spettante", t: 'number', v: valore, aiuto: 'Lasciare vuoto per eliminare la spettanza.' },
+    { n: 'note', l: 'Note' }
+  ]));
+  alSalva(function (d) {
+    d.militare_id = mId; d.contatore = contatore; d.anno = anno;
+    return api('spettanzaSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); ricarica(); });
+  });
+}
+function dialogoMovimento(mId, contatore, anno) {
+  apriDialogo(modulo('Movimento manuale - ' + contatore, [
+    { n: 'data', l: 'Data', t: 'date', v: oggi() }, { n: 'anno', l: 'Anno di riferimento', t: 'number', v: anno },
+    { n: 'quantita', l: "Quantita'", t: 'number', req: true, aiuto: 'Positivo = consumato, negativo = maturato/aggiunto.' },
+    { n: 'note', l: 'Motivo' }
+  ]));
+  alSalva(function (d) {
+    d.militare_id = mId; d.contatore = contatore;
+    return api('movimentoSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); ricarica(); });
+  });
+}
+function eliminaMovimenti(ids) {
+  if (ids.length && confirm('Eliminare ' + ids.length + ' movimenti?')) api('movimentoElimina', { ids: ids }).then(function () { ricarica(); });
+}
+
+var LIC = null; // stato della pagina licenze
+
+function schedeLicenze(attiva) {
+  return '<div class="schede"><a class="' + (attiva === 'anno' ? 'attiva' : '') + '" href="#licenze">Anno</a>'
+    + '<a class="' + (attiva === 'riepilogo' ? 'attiva' : '') + '" href="#licenze/riepilogo">Riepilogo anni</a></div>';
+}
+
+function vistaLicenze(anno, contatore) {
+  if (anno === 'riepilogo') return vistaRiepilogoLicenze(contatore);
+  anno = Number(anno) || Number(oggi().slice(0, 4));
+  var modifica = sessionStorage.getItem('licModifica') === '1';
+  leggiDati('licenze', { anno: anno }, function (r) {
+    var cont = CFG.contatori.filter(function (c) { return si(c.attivo); }), mod = puo('Operatore');
+    LIC = { anno: anno, r: r, cont: cont };
+    if (!mod) modifica = false;
+    var h = schedeLicenze('anno')
+      + '<div class="intestazione"><h1>Licenze e recuperi ' + anno + '</h1><div class="naviga"><a class="bottone" href="#licenze/' + (anno - 1) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="#licenze/' + (anno + 1) + '">' + (anno + 1) + ' &rarr;</a>'
+      + (mod ? (modifica
+        ? '<button class="bottone primario" onclick="salvaTabellaSpettanze()">Salva modifiche</button><button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'0\');ricarica()">Annulla</button>'
+        : '<button class="bottone" onclick="sessionStorage.setItem(\'licModifica\',\'1\');ricarica()">Modifica tabella</button>'
+          + '<button class="bottone" onclick="copiaSpettanze(' + anno + ')">Copia spettanze dal ' + (anno - 1) + '</button>'
+          + bottoneSel('lic', 'Imposta spettanza ai selezionati', 'dialogoSpettanzaMultipla')) : '')
+      + '</div></div>'
+      + '<p class="aiuto">' + (modifica ? 'Scrivi le spettanze nelle caselle (vuoto = nessuna spettanza) e premi <strong>Salva modifiche</strong>.'
+        : 'Spettante = valore inserito per ogni militare. Goduto = giorni del brogliaccio con codici collegati al contatore + movimenti manuali. RC e RC FEST scalano le ore secondo l\'orario di lavoro. Seleziona piu\' militari per assegnare la stessa spettanza a tutti.') + '</p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze"><tr>' + (mod && !modifica ? '<th rowspan="2">' + selTutti('lic') + '</th>' : '') + '<th rowspan="2">Militare</th>'
+      + cont.map(function (c) { return '<th colspan="3">' + esc(c.nome) + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')</th>'; }).join('') + '</tr><tr>'
+      + cont.map(function () { return '<th>Spett.</th><th>Goduto</th><th>Residuo</th>'; }).join('') + '</tr>'
+      + r.militari.map(function (m) {
+        return '<tr>' + (mod && !modifica ? '<td>' + sel('lic', m.id) + '</td>' : '') + '<td><a href="#militare/' + esc(m.id) + '/' + anno + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + cont.map(function (c) {
+          var k = m.id + '|' + c.nome, sp = r.spettanze[k], go = r.goduto[k] || 0, res = (sp || 0) - go;
+          var vuota = sp === undefined || sp === null;
+          var cella;
+          if (modifica) cella = '<input class="inp-spett" type="number" step="any" data-m="' + esc(m.id) + '" data-c="' + esc(c.nome) + '" data-orig="' + (vuota ? '' : sp) + '" value="' + (vuota ? '' : sp) + '">';
+          else if (mod) cella = '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(c.nome) + ',' + anno + ',' + J(vuota ? '' : sp) + ')">' + (vuota ? '<span class="vuoto">imposta</span>' : num(sp)) + '</button>';
+          else cella = vuota ? '' : num(sp);
+          return '<td>' + cella + '</td><td>' + num(go) + '</td><td class="' + (res < 0 ? 'negativo' : '') + '"><strong>' + num(res) + '</strong></td>';
+        }).join('') + '</tr>';
+      }).join('') + '</table></div>';
+    main(h);
+  });
+}
+
+function copiaSpettanze(anno) {
+  if (!confirm('Copiare le spettanze del ' + (anno - 1) + ' sul ' + anno + '?\nVengono copiate solo dove il ' + anno + ' non ha ancora un valore.')) return;
+  api('copiaSpettanze', { anno: anno }).then(function (n) { avviso('Copiate ' + n + ' spettanze'); ricarica(); });
+}
+
+function salvaTabellaSpettanze() {
+  var voci = Array.prototype.filter.call(document.querySelectorAll('input.inp-spett'), function (i) { return i.value.trim() !== i.dataset.orig; })
+    .map(function (i) { return { militare_id: i.dataset.m, contatore: i.dataset.c, anno: LIC.anno, quantita: i.value.trim() }; });
+  if (!voci.length) { avviso('Nessuna modifica da salvare'); sessionStorage.setItem('licModifica', '0'); ricarica(); return; }
+  api('spettanzeSalva', { voci: voci }).then(function (n) { avviso('Salvate ' + n + ' spettanze'); sessionStorage.setItem('licModifica', '0'); ricarica(); });
+}
+
+function dialogoSpettanzaMultipla(ids) {
+  if (!ids.length) return;
+  apriDialogo(modulo('Spettanza per ' + ids.length + ' militari', [
+    { n: 'contatore', l: 'Contatore', t: 'select', o: LIC.cont.map(function (c) { return [c.nome, c.nome + ' (' + (c.unita === 'ORE' ? 'ore' : 'giorni') + ')']; }) },
+    { n: 'anno', l: 'Anno', t: 'number', v: LIC.anno, req: true },
+    { n: 'quantita', l: "Quantita' spettante", t: 'number', aiuto: 'Lasciare vuoto per togliere la spettanza ai militari selezionati.' }
+  ]));
+  alSalva(function (d) {
+    var voci = ids.map(function (id) { return { militare_id: id, contatore: d.contatore, anno: d.anno, quantita: d.quantita }; });
+    return api('spettanzeSalva', { voci: voci }).then(function (n) { chiudiDialogo(); avviso('Aggiornate ' + n + ' spettanze'); ricarica(); });
+  });
+}
+
+function vistaRiepilogoLicenze(contatore) {
+  var cont = CFG.contatori.filter(function (c) { return si(c.attivo); });
+  contatore = decodeURIComponent(contatore || '') || (cont[0] && cont[0].nome);
+  var anchePersi = sessionStorage.getItem('riepPersi') === '1';
+  api('licenzeRiepilogo', { contatore: contatore, oggi: oggi(), anchePersi: anchePersi }).then(function (r) {
+    var mod = puo('Operatore'), unita = r.contatore.unita === 'ORE' ? 'ore' : 'giorni';
+    var tot = { anni: {}, totale: 0 };
+    var h = schedeLicenze('riepilogo')
+      + '<div class="intestazione"><h1>Riepilogo ' + esc(r.contatore.nome) + ' (' + unita + ')</h1><div class="naviga">'
+      + '<select onchange="location.hash=\'licenze/riepilogo/\'+encodeURIComponent(this.value)">' + opzioni(cont.map(function (c) { return c.nome; }), r.contatore.nome) + '</select>'
+      + '<label class="check"><input type="checkbox"' + (anchePersi ? ' checked' : '') + ' onchange="sessionStorage.setItem(\'riepPersi\',this.checked?\'1\':\'0\');ricarica()"> anche persi dalla forza</label>'
+      + '</div></div>'
+      + '<p class="aiuto">Per ogni anno: <strong>residuo</strong> = spettante - goduto (passa il mouse o tocca il numero per il dettaglio). '
+      + '<strong>Residuo totale</strong> = somma dei residui di tutti gli anni. ' + (mod ? 'Clicca su un anno per inserire o correggere la spettanza di quell\'anno, anche per gli anni passati.' : '') + '</p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze riep-anni"><tr><th>Militare</th>'
+      + r.anni.map(function (a) { return '<th>' + a + '</th>'; }).join('') + '<th>Residuo totale</th></tr>'
+      + r.militari.map(function (m) {
+        var somma = 0;
+        var celle = r.anni.map(function (a) {
+          var k = m.id + '|' + a, sp = r.spettanze[k], go = r.goduto[k] || 0;
+          var vuota = sp === undefined || sp === null;
+          if (vuota && !go) {
+            return '<td>' + (mod ? '<button class="link vuoto" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(r.contatore.nome) + ',' + a + ',\'\')">+</button>' : '') + '</td>';
+          }
+          var res = (sp || 0) - go;
+          somma += res; tot.anni[a] = (tot.anni[a] || 0) + res;
+          var titolo = 'Spettante ' + (vuota ? '-' : num(sp)) + ' / goduto ' + num(go);
+          var testo = '<strong>' + num(res) + '</strong><br><small>' + (vuota ? '–' : num(sp)) + ' - ' + num(go) + '</small>';
+          return '<td class="' + (res < 0 ? 'negativo' : '') + '" title="' + esc(titolo) + '">'
+            + (mod ? '<button class="link" onclick="dialogoSpettanza(' + J(m.id) + ',' + J(r.contatore.nome) + ',' + a + ',' + J(vuota ? '' : sp) + ')">' + testo + '</button>' : testo) + '</td>';
+        }).join('');
+        tot.totale += somma;
+        return '<tr class="' + (m.stato === 'PER' ? 'spento' : '') + '"><td><a href="#militare/' + esc(m.id) + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + celle
+          + '<td class="' + (somma < 0 ? 'negativo' : '') + '"><strong>' + num(somma) + '</strong></td></tr>';
+      }).join('')
+      + '<tr class="totali"><th>Totale reparto</th>' + r.anni.map(function (a) { return '<th>' + num(tot.anni[a] || 0) + '</th>'; }).join('') + '<th>' + num(tot.totale) + '</th></tr>'
+      + '</table></div>';
+    main(h);
+  });
+}
+
+// ---------------------------------------------------------------- servizi svolti
+function vistaServizi(anno, mese, categoria) {
+  var o = oggi().split('-');
+  anno = Number(anno) || Number(o[0]);
+  mese = mese === undefined ? Number(o[1]) : Number(mese); // 0 = tutto l'anno
+  categoria = categoria || 'SER';
+  var dal = anno + '-' + pad(mese || 1) + '-01';
+  var al = mese ? piuGiorni(mese === 12 ? (anno + 1) + '-01-01' : anno + '-' + pad(mese + 1) + '-01', -1) : anno + '-12-31';
+  leggiDati('servizi', { dal: dal, al: al, categoria: categoria }, function (r) {
+    var vai = function (a, m, c) { return '#servizi/' + a + '/' + m + '/' + c; };
+    var totali = {}, perCodice = {};
+    r.militari.forEach(function (m) {
+      totali[m.id] = 0;
+      r.codici.forEach(function (c) { var n = r.conta[m.id + '|' + c] || 0; totali[m.id] += n; perCodice[c] = (perCodice[c] || 0) + n; });
+    });
+    var eff = r.militari.filter(function (m) { return m.stato === 'EFF'; }).map(function (m) { return totali[m.id]; });
+    var min = eff.length ? Math.min.apply(null, eff) : 0, max = eff.length ? Math.max.apply(null, eff) : 0;
+    var tot = Object.keys(totali).reduce(function (a, k) { return a + totali[k]; }, 0);
+    var media = eff.length ? eff.reduce(function (a, b) { return a + b; }, 0) / eff.length : 0;
+    var h = '<div class="intestazione"><h1>Servizi ' + (mese ? MESI[mese] + ' ' : 'anno ') + anno + '</h1><div class="naviga">'
+      + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, 0, categoria), 'Tutto l\'anno']].concat(MESI.slice(1).map(function (n, k) { return [vai(anno, k + 1, categoria), n]; })), vai(anno, mese, categoria)) + '</select>'
+      + '<a class="bottone" href="' + vai(anno - 1, mese, categoria) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="' + vai(anno + 1, mese, categoria) + '">' + (anno + 1) + ' &rarr;</a>'
+      + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, mese, 'SER'), 'Servizi in sede (guardie, Udp, Gdg...)'], [vai(anno, mese, 'FUO'), 'Impieghi fuori sede'], [vai(anno, mese, 'ATT'), 'Attivita\' / visite'], [vai(anno, mese, 'ASS'), 'Assenze'], [vai(anno, mese, 'tutte'), 'Tutti i codici']], vai(anno, mese, categoria)) + '</select>'
+      + '<button class="bottone" onclick="window.print()">Stampa</button></div></div>'
+      + '<p class="aiuto">Numero di giorni per codice. Tra gli effettivi: media <strong>' + num(media) + '</strong>; in verde chi ne ha fatti di meno (' + min + '), in rosso chi ne ha fatti di piu\' (' + max + '). Utile per distribuire i turni in modo equo.</p>'
+      + (r.codici.length ? '<div class="contenitore-griglia" style="max-height:none"><table class="tabella licenze servizi"><tr><th>Militare</th>'
+        + r.codici.map(function (c) { return '<th>' + etichetta(c) + '</th>'; }).join('') + '<th>Totale</th></tr>'
+        + r.militari.map(function (m) {
+          var t = totali[m.id], cls = m.stato === 'EFF' && max > min ? (t === min ? 'st-valida' : t === max ? 'st-scaduta' : '') : '';
+          return '<tr class="' + (m.stato === 'EFF' ? '' : 'spento') + '"><td><a href="#militare/' + esc(m.id) + '">' + esc(m.nome) + '</a>' + (m.stato === 'EXT' ? ' <small>(extra)</small>' : '') + '</td>'
+            + r.codici.map(function (c) { var n = r.conta[m.id + '|' + c] || 0; return '<td>' + (n || '<span class="vuoto">-</span>') + '</td>'; }).join('')
+            + '<td class="' + cls + '"><strong>' + t + '</strong></td></tr>';
+        }).join('')
+        + '<tr class="totali"><th>Totale</th>' + r.codici.map(function (c) { return '<th>' + perCodice[c] + '</th>'; }).join('') + '<th>' + tot + '</th></tr></table></div>'
+        : '<p class="vuoto">Nessun codice di questo tipo nel periodo scelto.</p>');
+    main(h);
+  });
+}
+
+// ---------------------------------------------------------------- scadenze
+function vistaScadenze() {
+  leggiDati('scadenze', { oggi: oggi() }, function (r) {
+    MIL_CACHE = MIL_CACHE.length ? MIL_CACHE : r.militari;
+    var mod = puo('Operatore');
+    var h = '<div class="intestazione"><h1>Scadenze</h1><div class="naviga">' + (mod ? '<button class="bottone primario" onclick="dialogoScadenza()">+ Registra scadenza</button>' : '')
+      + (puo('Amministratore') ? '<a class="bottone" href="#config/TipiScadenza">Tipi di scadenza</a>' : '') + '</div></div>'
+      + '<p class="legenda-stati"><span class="st-scaduta">scaduta</span> <span class="st-in_scadenza">in scadenza</span> <span class="st-valida">valida</span> <span class="st-mancante">mancante</span> <span class="legenda-nota">📎 documento · ↻ rinnovo</span></p>'
+      + '<div class="contenitore-griglia" style="max-height:none"><table class="tabella matrice"><tr><th>Militare</th>' + r.tipi.map(function (t) { return '<th>' + esc(t.nome) + (si(t.anno_solare) ? '<br><small>anno solare</small>' : t.validita_mesi ? '<br><small>' + esc(t.validita_mesi) + ' mesi</small>' : '') + '</th>'; }).join('') + '</tr>'
+      + r.militari.map(function (m) {
+        return '<tr><td><a href="#militare/' + esc(m.id) + '">' + esc(m.grado + ' ' + m.cognome) + '</a></td>' + r.tipi.map(function (t) {
+          var s = r.ultime[m.id + '|' + t.nome];
+          var stato = s ? s.stato : (si(t.obbligatoria) ? 'mancante' : '');
+          var dentro = s ? (mod ? '<button class="link" onclick="dialogoScadenza(' + J(s) + ')">' + (it(s.data_scadenza) || 'senza data') + '</button>' : (it(s.data_scadenza) || 'senza data'))
+            + (s.documento_url ? ' <button class="link" onclick="scaricaDocumento(' + J(s.id) + ')" title="' + esc(s.documento_nome) + '">📎</button>' : '')
+            + (mod ? ' <button class="link piccolo" title="registra rinnovo" onclick="dialogoScadenza(null,' + J(m.id) + ',' + J(t.nome) + ')">↻</button>' : '')
+            : (mod ? '<button class="link vuoto" onclick="dialogoScadenza(null,' + J(m.id) + ',' + J(t.nome) + ')">+</button>' : '');
+          return '<td class="st-' + stato + '">' + dentro + '</td>';
+        }).join('') + '</tr>';
+      }).join('') + '</table></div>';
+    main(h);
+  });
+}
+
+function dialogoScadenza(s, mId, tipo) {
+  var caricaMil = MIL_CACHE.length ? Promise.resolve(MIL_CACHE) : api('militari', {}, true);
+  caricaMil.then(function (mil) {
+    MIL_CACHE = mil;
+    s = s || { militare_id: mId || '', tipo: tipo || '', data_esecuzione: oggi() };
+    apriDialogo(modulo(s.id ? 'Modifica scadenza' : 'Registra scadenza', [
+      { n: 'militare_id', l: 'Militare', t: 'select', o: mil.filter(function (m) { return m.stato !== 'PER'; }).map(function (m) { return [m.id, nomeMil(m)]; }), v: s.militare_id },
+      { n: 'tipo', l: 'Tipo', t: 'select', o: CFG.tipiScadenza.map(function (t) { return [t.nome, t.nome + (si(t.anno_solare) ? ' (anno solare)' : t.validita_mesi ? ' (' + t.validita_mesi + ' mesi)' : '')]; }), v: s.tipo },
+      { n: 'data_esecuzione', l: 'Eseguita il', t: 'date', v: s.data_esecuzione },
+      { n: 'data_scadenza', l: 'Scade il', t: 'date', v: s.id ? s.data_scadenza : '', aiuto: "Se vuota e il tipo ha una validita', viene calcolata in automatico." },
+      { n: 'esito', l: 'Esito', v: s.esito }, { n: 'note', l: 'Note', v: s.note },
+      { n: 'file', l: 'Documento (PDF, foto...) da allegare su Google Drive', t: 'file', aiuto: s.documento_nome ? 'Gia\' allegato: ' + s.documento_nome + ' (un nuovo file lo sostituisce nel registro)' : '' }
+    ], '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
+      + (s.id ? ' <button type="button" class="pericolo" onclick="eliminaScadenze([' + J(s.id) + '])">Elimina</button>' : '')));
+    alSalva(function (d) {
+      d.id = s.id || '';
+      return leggiFile(document.querySelector('#modulo [name=file]')).then(function (f) {
+        d.file = f;
+        return api('scadenzaSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); ricarica(); });
+      });
+    });
+  });
+}
+function eliminaScadenze(ids) {
+  if (ids.length && confirm('Eliminare ' + (ids.length > 1 ? ids.length + ' scadenze' : 'la scadenza') + ' (e i documenti allegati)?'))
+    api('scadenzaElimina', { ids: ids }).then(function (n) { chiudiDialogo(); avviso('Eliminate ' + n + ' scadenze'); ricarica(); });
+}
+
+// ---------------------------------------------------------------- configurazione
+var CONFIG_TAB = {
+  Codici: { titolo: 'Codici e colori', chiave: 'codice', lista: function () { return CFG.codici; } },
+  TipiScadenza: { titolo: 'Tipi di scadenza', chiave: 'nome', lista: function () { return CFG.tipiScadenza; } },
+  Contatori: { titolo: 'Contatori licenze / recuperi', chiave: 'nome', lista: function () { return CFG.contatori; } },
+  Gradi: { titolo: 'Gradi', chiave: 'sigla', lista: function () { return CFG.gradi; } },
+  Orario: { titolo: 'Orario di lavoro' },
+  Archivio: { titolo: 'Archivio anni' }
+};
+
+function vistaConfig(tab) {
+  tab = CONFIG_TAB[tab] ? tab : 'Codici';
+  if (tab === 'Archivio') return vistaArchivio();
+  var adm = puo('Amministratore'), def = CONFIG_TAB[tab];
+  var h = '<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === tab ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
+    + '<div class="intestazione"><h1>' + def.titolo + '</h1><div class="naviga">'
+    + (adm && tab !== 'Orario' && tab !== 'Archivio' ? bottoneSel('cfg', 'Elimina selezionati', 'eliminaConfigSel') + '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
+    + (adm ? '<button class="bottone" onclick="backupOra()">Backup ora</button>' : '') + '</div></div><table class="tabella">';
+  var mod = function (v) { return adm ? '<button class="link" onclick="dialogoConfig(' + J(tab) + ',' + J(v) + ')">modifica</button>' : ''; };
+  var cs = function (v) { return adm ? '<td>' + sel('cfg', v) + '</td>' : ''; }, ct = adm ? '<th>' + selTutti('cfg') + '</th>' : '';
+  CONFIG_ATTIVA = tab;
+  if (tab === 'Codici') {
+    h += '<tr>' + ct + '<th>Codice</th><th>Descrizione</th><th>Categoria</th><th>Presente in sede</th><th>Scala da</th><th>Attivo</th><th></th></tr>' + CFG.codici.map(function (k) {
+      return '<tr class="' + (si(k.attivo) ? '' : 'spento') + '">' + cs(k.codice) + '<td>' + etichetta(k.codice) + (si(k.perde_forza) ? ' <small title="fa perdere la forza">⇥ perde la forza</small>' : '')
+        + (si(k.rc_dopo) ? ' <small>+ RC il giorno dopo</small>' : '') + (k.giorni ? ' <small>(' + String(k.giorni).split('').map(function (g) { return ['', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'][g]; }).join(', ') + ')</small>' : '') + '</td><td>' + esc(k.descrizione) + '</td><td>' + esc(CATEGORIE[k.categoria] || k.categoria) + '</td><td>' + (si(k.presente_in_sede) ? "si'" : 'no') + '</td><td>'
+        + (k.contatore ? esc(k.contatore) + ' (' + (si(k.scala_orario) ? 'secondo orario' : num(k.quantita_giorno) + '/giorno') + ')' : '') + '</td><td>' + (si(k.attivo) ? "si'" : 'no') + '</td><td>' + mod(k.codice) + '</td></tr>';
+    }).join('');
+  } else if (tab === 'TipiScadenza') {
+    h += '<tr>' + ct + '<th>Nome</th><th>Validita\'</th><th>Preavviso</th><th>Obbligatoria</th><th>Descrizione</th><th></th></tr>' + CFG.tipiScadenza.map(function (t) {
+      return '<tr>' + cs(t.nome) + '<td>' + esc(t.nome) + '</td><td>' + (si(t.anno_solare) ? 'anno solare (31/12)' : t.validita_mesi ? esc(t.validita_mesi) + ' mesi' : 'data inserita a mano') + '</td><td>' + esc(t.preavviso_giorni) + ' gg</td><td>' + (si(t.obbligatoria) ? "si'" : 'no') + '</td><td>' + esc(t.descrizione) + '</td><td>' + mod(t.nome) + '</td></tr>';
+    }).join('');
+  } else if (tab === 'Contatori') {
+    h += '<tr>' + ct + '<th>Nome</th><th>Unita\'</th><th>Attivo</th><th></th></tr>' + CFG.contatori.map(function (c) {
+      return '<tr>' + cs(c.nome) + '<td>' + esc(c.nome) + '</td><td>' + (c.unita === 'ORE' ? 'Ore' : 'Giorni') + '</td><td>' + (si(c.attivo) ? "si'" : 'no') + '</td><td>' + mod(c.nome) + '</td></tr>';
+    }).join('');
+  } else if (tab === 'Gradi') {
+    h += '<tr>' + ct + '<th>Sigla</th><th>Descrizione</th><th>Ordine</th><th></th></tr>' + CFG.gradi.map(function (g) {
+      return '<tr>' + cs(g.sigla) + '<td>' + esc(g.sigla) + '</td><td>' + esc(g.descrizione) + '</td><td>' + esc(g.ordine) + '</td><td>' + mod(g.sigla) + '</td></tr>';
+    }).join('');
+  } else {
+    var o = CFG.orario;
+    h += '<tr><th>Lun</th><th>Mar</th><th>Mer</th><th>Gio</th><th>Ven</th><th>Sab</th><th>Dom</th><th>Festivi</th><th></th></tr><tr>'
+      + ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map(function (g) { return '<td>' + num(o[g]) + ' h</td>'; }).join('')
+      + '<td>' + (si(o.festivi_zero) ? '0 h' : 'come il giorno') + '</td><td>' + (adm ? '<button class="link" onclick="dialogoOrario()">modifica</button>' : '') + '</td></tr>';
+  }
+  main(h + '</table>' + (tab === 'Orario' ? '<p class="aiuto">I codici con "scala secondo orario" (RC, RC FEST) scalano dalle Ore di recupero le ore previste per quel giorno.</p>' : ''));
+}
+
+function vistaArchivio() {
+  api('anniArchiviati').then(function (archiviati) {
+    var adm = puo('Amministratore'), corrente = Number(oggi().slice(0, 4));
+    var possibili = [];
+    for (var a = corrente - 1; a >= corrente - 10; a--) if (archiviati.indexOf(String(a)) < 0) possibili.push(String(a));
+    main('<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === 'Archivio' ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
+      + '<div class="riquadro modulo"><h1>Archivio anni</h1>'
+      + '<p>Archiviare un anno passato sposta il suo brogliaccio e il suo registro in un Foglio separato, "Ruolino - archivio AAAA", nella cartella del Ruolino. '
+      + 'L\'app resta veloce anche dopo anni di uso.</p><ul>'
+      + '<li>Il brogliaccio di quell\'anno <strong>resta consultabile</strong> dall\'app, ma non si puo\' piu\' modificare.</li>'
+      + '<li>Licenze e recuperi goduti in quell\'anno vengono conservati come movimenti riepilogativi: residui e riepilogo pluriennale non cambiano.</li>'
+      + '<li>Conviene archiviare a inizio anno l\'anno appena chiuso, dopo aver completato le correzioni.</li></ul>'
+      + '<p><strong>Anni archiviati:</strong> ' + (archiviati.length ? archiviati.sort().join(', ') : 'nessuno') + '</p>'
+      + (adm ? (possibili.length ? '<div class="naviga"><select id="anno-arch">' + opzioni(possibili, possibili[0]) + '</select><button class="bottone pericolo" onclick="archiviaAnno()">Archivia anno</button></div>' : '')
+        : '<p class="aiuto">Solo un amministratore puo\' archiviare.</p>')
+      + '</div>');
+  });
+}
+function archiviaAnno() {
+  var a = document.getElementById('anno-arch').value;
+  if (!confirm('Archiviare il ' + a + '? Il brogliaccio del ' + a + ' non sara\' piu\' modificabile.')) return;
+  api('archiviaAnno', { anno: a }).then(function (r) {
+    avviso('Archiviato ' + a + ': ' + r.giornate + ' giornate spostate in "' + r.nome + '"'); ricarica();
+  });
+}
+
+function dialogoConfig(tab, valore) {
+  var def = CONFIG_TAB[tab];
+  var o = valore ? def.lista().filter(function (x) { return x[def.chiave] === valore; })[0] : {};
+  var campi = {
+    Codici: [{ n: 'codice', l: 'Codice', req: true, v: o.codice }, { n: 'descrizione', l: 'Descrizione', v: o.descrizione },
+      { n: 'categoria', l: 'Categoria', t: 'select', o: Object.keys(CATEGORIE).map(function (k) { return [k, CATEGORIE[k]]; }), v: o.categoria || 'ALT' },
+      { n: 'colore_sfondo', l: 'Colore sfondo', t: 'color', v: o.colore_sfondo || '#FFFFFF' },
+      { n: 'colore_testo', l: 'Colore testo', t: 'color', v: o.colore_testo || '#000000' },
+      { n: 'presente_in_sede', l: 'Conta come presente in sede', t: 'checkbox', v: valore ? o.presente_in_sede : 'SI' },
+      { n: 'rc_dopo', l: 'Servizio con smonto: il giorno dopo mette RC in automatico (es. guardie)', t: 'checkbox', v: o.rc_dopo },
+      { n: 'giorni', l: 'Giorni in cui si puo\' inserire (nessuno selezionato = tutti)', t: 'multi', o: [['1', 'Lunedi\''], ['2', 'Martedi\''], ['3', 'Mercoledi\''], ['4', 'Giovedi\''], ['5', 'Venerdi\''], ['6', 'Sabato'], ['7', 'Domenica']], v: String(o.giorni || '').split(''), aiuto: 'Tenere premuto CTRL per selezionarne piu\' di uno. Es. GUARDIA B: da martedi\' a sabato.' },
+      { n: 'perde_forza', l: "Fa perdere la forza (congedo, trasferimento): dal giorno inserito il militare non e' piu' in forza", t: 'checkbox', v: o.perde_forza },
+      { n: 'contatore', l: 'Scala dal contatore', t: 'select', o: [['', '— nessuno —']].concat(CFG.contatori.map(function (c) { return c.nome; })), v: o.contatore },
+      { n: 'quantita_giorno', l: "Quantita' per giorno", t: 'number', v: o.quantita_giorno || 1 },
+      { n: 'scala_orario', l: "Scala le ore secondo l'orario di lavoro (invece della quantita' fissa)", t: 'checkbox', v: o.scala_orario },
+      { n: 'ordine', l: "Ordine nell'elenco", t: 'number', v: o.ordine || 500 },
+      { n: 'attivo', l: 'Attivo', t: 'checkbox', v: valore ? o.attivo : 'SI' }],
+    TipiScadenza: [{ n: 'nome', l: 'Nome', req: true, v: o.nome },
+      { n: 'anno_solare', l: "Ad anno solare: va fatta ogni anno e scade il 31 dicembre (es. PEFO)", t: 'checkbox', v: o.anno_solare },
+      { n: 'validita_mesi', l: "Validita' (mesi)", t: 'number', v: o.validita_mesi, aiuto: "Se indicata (e non e' ad anno solare), la scadenza si calcola dalla data di esecuzione." },
+      { n: 'preavviso_giorni', l: 'Preavviso (giorni)', t: 'number', v: o.preavviso_giorni || 30 },
+      { n: 'obbligatoria', l: 'Obbligatoria per tutti', t: 'checkbox', v: o.obbligatoria },
+      { n: 'descrizione', l: 'Descrizione', v: o.descrizione }, { n: 'ordine', l: 'Ordine', t: 'number', v: o.ordine || 500 }],
+    Contatori: [{ n: 'nome', l: 'Nome', req: true, v: o.nome }, { n: 'unita', l: "Unita'", t: 'select', o: [['GG', 'Giorni'], ['ORE', 'Ore']], v: o.unita },
+      { n: 'ordine', l: 'Ordine', t: 'number', v: o.ordine || 500 }, { n: 'attivo', l: 'Attivo', t: 'checkbox', v: valore ? o.attivo : 'SI' }],
+    Gradi: [{ n: 'sigla', l: 'Sigla', req: true, v: o.sigla }, { n: 'descrizione', l: 'Descrizione', v: o.descrizione },
+      { n: 'ordine', l: 'Ordine gerarchico', t: 'number', v: o.ordine || 500, aiuto: "Numero piu' basso = grado piu' alto." }]
+  }[tab];
+  apriDialogo(modulo(def.titolo + (valore ? ' - modifica' : ' - nuovo'), campi,
+    '<button class="primario" id="salva">Salva</button> <button type="button" onclick="chiudiDialogo()">Annulla</button>'
+    + (valore ? ' <button type="button" class="pericolo" onclick="eliminaConfig(' + J(tab) + ',[' + J(valore) + '])">Elimina</button>' : '')));
+  alSalva(function (d) {
+    return api('configSalva', { tabella: tab, originale: valore || '', oggetto: d }).then(function () {
+      chiudiDialogo(); avviso('Salvato'); return ricaricaConfig().then(ricarica);
+    });
+  });
+}
+function eliminaConfig(tab, valori) {
+  if (!valori.length || !confirm('Eliminare ' + valori.join(', ') + '?')) return;
+  api('configElimina', { tabella: tab, valori: valori }).then(function (r) {
+    chiudiDialogo();
+    avviso('Eliminati: ' + r.eliminati.join(', '));
+    if (r.usati.length) avviso('Non eliminati perche\' in uso (si possono disattivare): ' + r.usati.join(', '), true);
+    return ricaricaConfig().then(ricarica);
+  });
+}
+var CONFIG_ATTIVA = "Codici";
+function eliminaConfigSel(valori) { eliminaConfig(CONFIG_ATTIVA, valori); }
+function dialogoOrario() {
+  var o = CFG.orario, nomi = { lun: "Lunedi'", mar: "Martedi'", mer: "Mercoledi'", gio: "Giovedi'", ven: "Venerdi'", sab: 'Sabato', dom: 'Domenica' };
+  apriDialogo(modulo('Orario di lavoro (ore per giorno)', Object.keys(nomi).map(function (g) { return { n: g, l: nomi[g], t: 'number', v: o[g] }; })
+    .concat([{ n: 'festivi_zero', l: 'Nei giorni festivi non scala ore', t: 'checkbox', v: o.festivi_zero }])));
+  alSalva(function (d) { return api('orarioSalva', d).then(function () { chiudiDialogo(); avviso('Salvato'); return ricaricaConfig().then(ricarica); }); });
+}
+function backupOra() {
+  api('backupOra').then(function (r) { apriDialogo('<h2>Backup creato</h2><p><strong>' + esc(r.nome) + '</strong></p><p class="aiuto">La copia e\' nella cartella "Ruolino - file / Backup" sul Drive del proprietario.</p>'); });
+}
+
+// ---------------------------------------------------------------- importazione
+function vistaImporta() {
+  main('<div class="riquadro modulo">' + modulo('Importa il brogliaccio Excel', [
+    { n: 'file', l: 'File Excel (.xlsx)', t: 'file', accept: '.xlsx,.xls' },
+    { n: 'anno', l: 'Anno del brogliaccio', t: 'number', v: oggi().slice(0, 4), req: true },
+    { n: 'foglio', l: 'Nome del foglio', v: 'BROGLIACCIO', req: true }
+  ], '<button class="primario" id="salva">Importa</button>')
+    + '<p class="aiuto">Legge anagrafica e codici giornalieri. I militari gia\' presenti (stesso cognome e nome) vengono aggiornati; il brogliaccio del periodo contenuto nel file viene sostituito. Il file viene salvato su Drive nella cartella "Import".</p><div id="esito"></div></div>');
+  alSalva(function (d) {
+    return leggiFile(document.querySelector('#modulo [name=file]')).then(function (f) {
+      if (!f) { avviso('Scegli un file', true); return; }
+      d.file = f;
+      return api('importa', d).then(function (righe) {
+        document.getElementById('esito').innerHTML = '<h2>Esito</h2><ul>' + righe.map(function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul>';
+        MIL_CACHE = []; return ricaricaConfig();
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------- utenti e registro
+function vistaUtenti() {
+  api('utenti').then(function (lista) {
+    main('<div class="intestazione"><h1>Utenti</h1><div class="naviga">' + bottoneSel('ute', 'Nuova password provvisoria', 'azzeraPassword', '-pw') + bottoneSel('ute', 'Rimuovi selezionati', 'eliminaUtenti') + '<button class="bottone primario" onclick="dialogoUtente()">+ Aggiungi utente</button></div></div>'
+      + '<p class="aiuto">Ogni utente entra con nome utente e password: non serve un account Google e il Foglio non e\' condiviso con nessuno. '
+      + 'Quando aggiungi un utente gli assegni una <strong>password provvisoria</strong>, che dovra\' cambiare al primo accesso. '
+      + 'Se qualcuno dimentica la password, selezionalo e premi "Nuova password provvisoria".</p>'
+      + '<table class="tabella"><tr><th>' + selTutti('ute') + '</th><th>Nome utente</th><th>Nome</th><th>Ruolo</th><th>Password</th><th></th></tr>' + lista.map(function (u) {
+        return '<tr><td>' + (u.email !== UTENTE.email ? sel('ute', u.email) : '') + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.nome) + '</td><td>' + esc(u.ruolo) + '</td><td>' + (!u.haPassword ? '<span class="negativo">nessuna: assegna una password provvisoria</span>' : u.provvisoria ? '<span class="vuoto">provvisoria (da cambiare al primo accesso)</span>' : 'personale') + '</td><td><button class="link" onclick="dialogoUtente(' + J(u) + ')">modifica</button>'
+          + '</td></tr>';
+      }).join('') + '</table>');
+  });
+}
+function dialogoUtente(u) {
+  var nuovo = !u;
+  u = u || { ruolo: 'Operatore' };
+  apriDialogo(modulo(nuovo ? 'Nuovo utente' : 'Modifica utente', [
+    { n: 'email', l: 'Nome utente', req: true, v: u.email, aiuto: 'Es. mario.rossi (3-60 caratteri: lettere, numeri, punto, trattino, @). Serve per entrare.' },
+    { n: 'nome', l: 'Nome da mostrare', v: u.nome },
+    { n: 'ruolo', l: 'Ruolo', t: 'select', o: [['Amministratore', 'Amministratore - tutto'], ['Operatore', 'Operatore - brogliaccio, elenco personale, licenze, scadenze'], ['Consultazione', 'Consultazione - sola lettura']], v: u.ruolo },
+    { n: 'password', l: nuovo ? 'Password provvisoria' : 'Nuova password provvisoria (facoltativa)', t: 'password', req: nuovo, aiuto: 'Almeno 8 caratteri, con lettere e numeri. Comunicala all\'interessato: al primo accesso dovra\' sceglierne una sua.' }
+  ]));
+  if (!nuovo) document.querySelector('#modulo [name=email]').readOnly = true;
+  document.querySelector('#modulo [name=email]').setAttribute('autocapitalize', 'none');
+  document.querySelector('#modulo [name=password]').setAttribute('autocomplete', 'new-password');
+  alSalva(function (d) {
+    d.email = d.email.trim().toLowerCase();
+    return api('utenteSalva', d).then(function () { chiudiDialogo(); avviso('Utente salvato'); ricarica(); });
+  });
+}
+function azzeraPassword(nomi) {
+  if (!nomi.length) return;
+  apriDialogo(modulo('Password provvisoria per ' + nomi.join(', '), [
+    { n: 'password', l: 'Password provvisoria', t: 'password', req: true, aiuto: 'Almeno 8 caratteri, con lettere e numeri. Al primo accesso dovranno sceglierne una personale.' }
+  ]));
+  document.querySelector('#modulo [name=password]').setAttribute('autocomplete', 'new-password');
+  alSalva(function (d) { return api('azzeraPassword', { emails: nomi, password: d.password }).then(function () { chiudiDialogo(); avviso('Password provvisoria assegnata'); ricarica(); }); });
+}
+function eliminaUtenti(emails) {
+  if (emails.length && confirm('Rimuovere ' + emails.join(', ') + '? Non potranno piu\' entrare.')) api('utenteElimina', { emails: emails }).then(function () { ricarica(); });
+}
+function vistaRegistro() {
+  api('registro').then(function (r) {
+    main('<h1>Registro modifiche</h1><p class="aiuto">Ultime 500 operazioni.</p><table class="tabella"><tr><th>Quando</th><th>Utente</th><th>Operazione</th></tr>'
+      + r.map(function (x) { return '<tr><td>' + esc(x.quando) + '</td><td>' + esc(x.utente) + '</td><td>' + esc(x.azione) + '</td></tr>'; }).join('') + '</table>');
+  });
+}
+
+avvio();
+</script>

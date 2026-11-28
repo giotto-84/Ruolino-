@@ -209,6 +209,7 @@ function attivita() {
 
 function svuotaIntestazione() {
   MEMORIA = {}; RU = null; MIL_CACHE = [];
+  var cr = document.getElementById('cerca-rapida'); if (cr) cr.remove();
   clearTimeout(TIMER_INATTIVITA);
   document.getElementById('menu').innerHTML = '';
   document.getElementById('utente').innerHTML = '';
@@ -277,12 +278,9 @@ function entra() {
     impostaConfig(r.config);
     document.getElementById('utente').innerHTML = '<span title="' + esc(UTENTE.email) + '">' + esc(UTENTE.nome || UTENTE.email) + '</span> <span class="badge">' + esc(UTENTE.ruolo) + '</span>'
       + ' <button class="link" onclick="dialogoCambiaPassword()" title="Cambia password">🔑</button> <button class="link" onclick="esci()">Esci</button>';
-    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Licenze'], ['servizi', 'Servizi'], ['scadenze', 'Scadenze']];
-    voci.push(['config', 'Configurazione']);
-    if (puo('Amministratore')) voci.push(['importa', 'Importa Excel'], ['utenti', 'Utenti']);
-    if (puo('Operatore')) voci.push(['registro', 'Registro']);
-    document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '" onclick="chiudiMenu()">' + v[1] + '</a>'; }).join('')
-      + (CFG.cartellaUrl ? '<a href="' + esc(CFG.cartellaUrl) + '" target="_blank" title="Cartella dei file su Google Drive">Drive ↗</a>' : '');
+    var voci = [['situazione', 'Dati della forza'], ['ruolino', 'Brogliaccio'], ['militari', 'Elenco personale'], ['licenze', 'Statistiche'], ['scadenze', 'Scadenze'], ['impostazioni', '⚙ Altro']];
+    document.getElementById('menu').innerHTML = voci.map(function (v) { return '<a href="#' + v[0] + '" data-r="' + v[0] + '" onclick="chiudiMenu()">' + v[1] + '</a>'; }).join('');
+    preparaRicerca();
     if (!MENU_COLLEGATO) { window.addEventListener('hashchange', instrada); MENU_COLLEGATO = true; }
     instrada();
     precarica();
@@ -302,17 +300,76 @@ function apriMenu() { document.body.classList.toggle('menu-aperto'); }
 function chiudiMenu() { document.body.classList.remove('menu-aperto'); }
 
 function instrada() {
+  if (typeof CODA !== 'undefined' && CODA.ops.length) inviaCoda();
   var p = (location.hash.replace(/^#/, '') || 'situazione').split('/');
   chiudiMenu();
-  var voce = document.querySelector('#menu a[data-r="' + p[0] + '"]');
-  var pag = document.getElementById('pagina-attuale'); if (pag) pag.textContent = voce ? voce.textContent : '';
-  document.querySelectorAll('#menu a').forEach(function (a) { a.classList.toggle('attivo', a.dataset.r === p[0]); });
+  var gruppo = GRUPPI_MENU[p[0]] || p[0];
+  var pag = document.getElementById('pagina-attuale'); if (pag) pag.textContent = TITOLI_PAGINA[p[0]] || '';
+  document.querySelectorAll('#menu a').forEach(function (a) { a.classList.toggle('attivo', a.dataset.r === gruppo); });
   document.body.classList.toggle('largo', ['ruolino', 'scadenze', 'licenze', 'servizi'].indexOf(p[0]) >= 0);
   var viste = { situazione: vistaSituazione, ruolino: vistaRuolino, militari: vistaMilitari, militare: vistaMilitare,
-    licenze: vistaLicenze, servizi: vistaServizi, scadenze: vistaScadenze, config: vistaConfig, importa: vistaImporta, utenti: vistaUtenti, registro: vistaRegistro };
+    licenze: vistaLicenze, servizi: vistaServizi, scadenze: vistaScadenze, config: vistaConfig, impostazioni: vistaImpostazioni, importa: vistaImporta, utenti: vistaUtenti, registro: vistaRegistro };
   (viste[p[0]] || vistaSituazione).apply(null, p.slice(1));
 }
 function ricarica() { instrada(); }
+
+// ---------------------------------------------------------------- menu corto e ricerca veloce
+var GRUPPI_MENU = { servizi: 'licenze', militare: 'militari', config: 'impostazioni', importa: 'impostazioni', utenti: 'impostazioni', registro: 'impostazioni' };
+var TITOLI_PAGINA = { situazione: 'Dati della forza', ruolino: 'Brogliaccio', militari: 'Elenco personale', militare: 'Scheda', licenze: 'Licenze', servizi: 'Servizi', scadenze: 'Scadenze',
+  impostazioni: 'Altro', config: 'Configurazione', importa: 'Importa Excel', utenti: 'Utenti', registro: 'Registro' };
+
+function vistaImpostazioni() {
+  var voci = [['#config', '⚙️', 'Configurazione', 'Codici e colori, tipi di scadenza, contatori, gradi, orario, archivio']];
+  if (puo('Amministratore')) voci.push(['#importa', '📥', 'Importa Excel', 'Carica un brogliaccio .xlsx'], ['#utenti', '👥', 'Utenti', 'Accessi, ruoli e password']);
+  if (puo('Operatore')) voci.push(['#registro', '📜', 'Registro', 'Chi ha modificato cosa e quando']);
+  var h = '<h1>Altro</h1><div class="tessere">' + voci.map(function (v) {
+    return '<a class="tessera" href="' + v[0] + '"><span class="tessera-icona">' + v[1] + '</span><strong>' + v[2] + '</strong><small>' + v[3] + '</small></a>';
+  }).join('')
+    + (CFG.cartellaUrl ? '<a class="tessera" href="' + esc(CFG.cartellaUrl) + '" target="_blank"><span class="tessera-icona">📁</span><strong>Cartella su Drive ↗</strong><small>Documenti, esportazioni e backup</small></a>' : '')
+    + '<a class="tessera" href="javascript:dialogoCambiaPassword()"><span class="tessera-icona">🔑</span><strong>Cambia password</strong><small>La tua password di accesso</small></a></div>';
+  main(h);
+}
+
+/** Ricerca veloce in alto: scrivi un cognome e vai alla scheda. Usa l'elenco gia' in memoria. */
+function preparaRicerca() {
+  if (document.getElementById('cerca-rapida')) return;
+  var box = document.createElement('div');
+  box.id = 'cerca-rapida';
+  box.innerHTML = '<button type="button" class="cerca-apri" aria-label="Cerca" onclick="apriRicerca()">🔍</button>'
+    + '<input id="cerca-q" type="search" placeholder="Cerca militare…" autocomplete="off" oninput="cercaRapida()" onkeydown="tastoRicerca(event)" onfocus="cercaRapida()">'
+    + '<div id="cerca-esiti" hidden></div>';
+  var u = document.getElementById('utente');
+  u.parentNode.insertBefore(box, u);
+  document.addEventListener('click', function (ev) { if (!ev.target.closest('#cerca-rapida')) chiudiRicerca(); });
+}
+function apriRicerca() { document.body.classList.add('ricerca-aperta'); var q = document.getElementById('cerca-q'); q.focus(); cercaRapida(); }
+function chiudiRicerca() { document.body.classList.remove('ricerca-aperta'); var e = document.getElementById('cerca-esiti'); if (e) e.hidden = true; }
+function elencoPerRicerca() {
+  if (MIL_CACHE.length) return Promise.resolve(MIL_CACHE);
+  var m = MEMORIA[chiaveDati('militari', {})];
+  if (m) return Promise.resolve(m.dati);
+  return api('militari', {}, true).then(function (l) { MEMORIA[chiaveDati('militari', {})] = { dati: l, json: JSON.stringify(l), quando: Date.now() }; return l; });
+}
+function cercaRapida() {
+  var q = document.getElementById('cerca-q').value.trim().toUpperCase(), out = document.getElementById('cerca-esiti');
+  if (q.length < 2) { out.hidden = true; return; }
+  elencoPerRicerca().then(function (lista) {
+    var parole = q.split(/\s+/);
+    var trovati = lista.filter(function (m) {
+      var t = (m.grado + ' ' + m.cognome + ' ' + m.nome + ' ' + m.incarico + ' ' + (m.impiego || '')).toUpperCase();
+      return parole.every(function (p) { return t.indexOf(p) >= 0; });
+    }).sort(function (a, b) { return (a.stato === 'PER') - (b.stato === 'PER'); }).slice(0, 8);
+    out.innerHTML = trovati.map(function (m, i) {
+      return '<a href="#militare/' + esc(m.id) + '" class="' + (i === 0 ? 'primo' : '') + (m.stato === 'PER' ? ' spento' : '') + '" onclick="chiudiRicerca();document.getElementById(\'cerca-q\').value=\'\'">'
+        + '<strong>' + esc(m.cognome + ' ' + m.nome) + '</strong> <small>' + esc(m.grado) + (m.incarico ? ' · ' + esc(m.incarico) : '') + (m.stato === 'PER' ? ' · non in forza' : '') + '</small></a>';
+    }).join('') || '<p class="vuoto">Nessuno trovato.</p>';
+    out.hidden = false;
+  });
+}
+function tastoRicerca(ev) {
+  if (ev.key === 'Escape') { ev.target.blur(); chiudiRicerca(); }
+  if (ev.key === 'Enter') { var a = document.querySelector('#cerca-esiti a'); if (a) { ev.preventDefault(); a.click(); } }
+}
 function main(html) { document.getElementById('main').innerHTML = html; }
 
 // ---------------------------------------------------------------- situazione
@@ -460,7 +517,10 @@ function htmlBarraCodici() {
       return '<button type="button" class="cod-btn" data-cod="' + esc(c) + '" style="background:' + esc(k.colore_sfondo) + ';color:' + esc(k.colore_testo) + '" title="' + esc(k.descrizione) + '" onclick="sceltaCodice(' + J(c) + ')">' + esc(c) + '</button>';
     }).join('')
     + '<select id="pn-altro" onchange="sceltaCodice(this.value); this.value=\'\'"><option value="">Altro…</option>'
-    + CFG.codiciAttivi.map(function (k) { return '<option value="' + esc(k.codice) + '">' + esc(k.codice + (k.descrizione ? ' - ' + k.descrizione : '')) + '</option>'; }).join('') + '</select>'
+    + Object.keys(CATEGORIE).map(function (f) {
+      var l = CFG.codiciAttivi.filter(function (k) { return (CATEGORIE[k.categoria] ? k.categoria : 'ALT') === f; });
+      return l.length ? '<optgroup label="' + esc(CATEGORIE[f]) + '">' + l.map(function (k) { return '<option value="' + esc(k.codice) + '">' + esc(k.codice + (k.descrizione ? ' - ' + k.descrizione : '')) + '</option>'; }).join('') + '</optgroup>' : '';
+    }).join('') + '</select>'
     + '<button type="button" class="cod-btn cancella" data-cod="__cancella" onclick="sceltaCodice(\'__cancella\')">✖ Cancella</button>'
     + '<div class="barra-opzioni"><input id="pn-loc" placeholder="localita\' (facoltativa)" value="' + esc(PENNELLO.loc) + '" oninput="PENNELLO.loc=this.value">'
     + '<label class="check"><input type="checkbox" id="pn-sost"' + (PENNELLO.sost ? ' checked' : '') + ' onchange="PENNELLO.sost=this.checked"> sostituisci i codici gia\' presenti</label></div>'
@@ -501,7 +561,10 @@ function htmlVistaMese() {
   if (!RU.mil.length) h += '<tr><td colspan="40" class="vuoto">Nessun militare in forza in questo mese.</td></tr>';
   h += '</tbody><tfoot><tr><td class="fisso c1"></td><td class="fisso c2"></td><td class="fisso c3"><strong>Presenti in sede</strong></td>'
     + RU.giorni.map(function (g) { return '<td class="totale" data-tot="' + g.data + '"></td>'; }).join('') + '</tr></tfoot></table></div>'
-    + '<h3>Legenda</h3><div class="legenda">' + CFG.codiciAttivi.map(function (k) { return etichetta(k.codice) + ' ' + esc(k.descrizione); }).join(' &nbsp; ') + '</div>';
+    + '<h3>Legenda</h3><div class="legenda">' + Object.keys(CATEGORIE).map(function (f) {
+      var l = CFG.codiciAttivi.filter(function (k) { return (CATEGORIE[k.categoria] ? k.categoria : 'ALT') === f && k.codice !== 'NOTA'; });
+      return l.length ? '<div class="legenda-fam"><strong>' + esc(CATEGORIE[f]) + ':</strong> ' + l.map(function (k) { return etichetta(k.codice) + ' ' + esc(k.descrizione); }).join(' &nbsp; ') + '</div>' : '';
+    }).join('') + '</div>';
   return h;
 }
 
@@ -598,6 +661,7 @@ function aggiornaSmonto(mId, data, cod) {
 }
 
 function sostituisciCella(mId, data, lista) {
+  if (!RU || !RU.giorni.some(function (g) { return g.data === data; })) return;
   RU.celle[mId + '|' + data] = lista;
   var el = document.querySelector('.cella[data-m="' + mId + '"][data-d="' + data + '"]');
   var m = RU.militari.filter(function (x) { return x.id === mId; })[0];
@@ -641,6 +705,8 @@ function mostraAnnulla() {
 }
 
 function annullaModifiche() {
+  if (CODA.ops.length) { inviaCoda().then(annullaModifiche, annullaModifiche); return; }
+  if (CODA.inVolo) { var v = CODA.inVolo; CODA.inVolo = null; v.then(annullaModifiche, annullaModifiche); return; }
   var celle = Object.keys(ANNULLA.celle).map(function (k) {
     var c = ANNULLA.celle[k];
     return { militare_id: c.militare_id, data: c.data, voci: c.voci.map(function (v) { return { codice: v.c, localita: v.l, quantita: v.q, note: v.n }; }) };
@@ -653,27 +719,45 @@ function annullaModifiche() {
 // ---- inserimento con la barra dei codici: la casella cambia subito, il salvataggio avviene dietro le quinte
 var dipingendo = false;
 
+// I tocchi fatti in rapida successione partono insieme in un unico salvataggio (meno attese con Google).
+var CODA = { ops: [], prima: {}, timer: null, attesa: 700 };
+
 function applicaPennello(el) {
   var tipo = PENNELLO.tipo;
   if (!tipo || el.dataset.inCorso || el.classList.contains('fuori')) return;
-  var mId = el.dataset.m, data = el.dataset.d;
-  var prima = (RU.celle[mId + '|' + data] || []).slice();
+  var mId = el.dataset.m, data = el.dataset.d, k = mId + '|' + data;
+  if (!CODA.prima[k]) CODA.prima[k] = (RU.celle[k] || []).slice();
   ricordaPerAnnulla(mId, data, [tipo]);
-  var loc = String(PENNELLO.loc || '').toUpperCase();
-  var provvisoria = tipo === '__cancella' ? [] : (PENNELLO.sost ? [] : prima.filter(function (x) { return x.c !== tipo; }))
-    .concat(tipo === '__cancella' ? [] : [{ id: '', m: mId, d: data, c: tipo, l: loc, n: '' }]);
+  var loc = String(PENNELLO.loc || '').toUpperCase(), canc = tipo === '__cancella';
+  var prima = RU.celle[k] || [];
+  var provvisoria = canc ? [] : (PENNELLO.sost ? [] : prima.filter(function (x) { return x.c !== tipo; }))
+    .concat([{ id: '', m: mId, d: data, c: tipo, l: loc, n: '' }]);
   sostituisciCella(mId, data, provvisoria);
   var elProv = document.querySelector('.cella[data-m="' + mId + '"][data-d="' + data + '"]');
   if (elProv) { elProv.dataset.inCorso = '1'; elProv.classList.add('in-salvataggio'); }
-  var base = { militare_id: mId, data: data };
-  var p = tipo === '__cancella' ? api('cellaElimina', base, true).then(function (l) { aggiornaGiornoDopo(mId, data); return l; })
-    : api('cellaSalva', Object.assign(base, { codice: tipo, localita: loc, sostituisci: PENNELLO.sost }), true);
+  CODA.ops.push({ militare_id: mId, data: data, codice: canc ? '' : tipo, localita: loc, sostituisci: PENNELLO.sost });
   mostraAnnulla();
-  p.then(function (lista) {
-    if (tipo !== '__cancella' && si(codice(tipo).perde_forza)) { sceltaCodice(tipo); avviso('Non piu\' in forza da quel giorno'); ricarica(); return; }
-    sostituisciCella(mId, data, lista);
-    if (tipo !== '__cancella') aggiornaSmonto(mId, data, tipo);
-  }, function () { sostituisciCella(mId, data, prima); delete ANNULLA.celle[mId + '|' + data]; mostraAnnulla(); });
+  clearTimeout(CODA.timer);
+  CODA.timer = setTimeout(inviaCoda, CODA.ops.length >= 60 ? 0 : CODA.attesa);
+}
+
+function inviaCoda() {
+  clearTimeout(CODA.timer);
+  if (!CODA.ops.length) return Promise.resolve();
+  var ops = CODA.ops, prima = CODA.prima;
+  CODA.ops = []; CODA.prima = {};
+  return (CODA.inVolo = api('celleSalva', { operazioni: ops }, true).then(function (r) {
+    Object.keys(r.celle).forEach(function (k) { var p = k.split('|'); sostituisciCella(p[0], p[1], r.celle[k]); });
+    if (r.errori.length) {
+      r.errori.forEach(function (e) { if (prima[e.k]) { var p = e.k.split('|'); sostituisciCella(p[0], p[1], r.celle[e.k] || prima[e.k]); } delete ANNULLA.celle[e.k]; });
+      mostraAnnulla();
+      avviso(r.errori.length === 1 ? r.errori[0].errore : r.errori.length + ' caselle non salvate: ' + r.errori[0].errore, true);
+    }
+    if (r.perdeForza) { avviso('Non piu\' in forza da quel giorno'); ricarica(); }
+  }, function () {
+    Object.keys(prima).forEach(function (k) { var p = k.split('|'); sostituisciCella(p[0], p[1], prima[k]); delete ANNULLA.celle[k]; });
+    mostraAnnulla();
+  }));
 }
 
 function collegaGriglia() {
@@ -1028,8 +1112,9 @@ function eliminaMovimenti(ids) {
 var LIC = null; // stato della pagina licenze
 
 function schedeLicenze(attiva) {
-  return '<div class="schede"><a class="' + (attiva === 'anno' ? 'attiva' : '') + '" href="#licenze">Anno</a>'
-    + '<a class="' + (attiva === 'riepilogo' ? 'attiva' : '') + '" href="#licenze/riepilogo">Riepilogo anni</a></div>';
+  return '<div class="schede"><a class="' + (attiva === 'anno' ? 'attiva' : '') + '" href="#licenze">Licenze dell\'anno</a>'
+    + '<a class="' + (attiva === 'riepilogo' ? 'attiva' : '') + '" href="#licenze/riepilogo">Licenze: riepilogo anni</a>'
+    + '<a class="' + (attiva === 'servizi' ? 'attiva' : '') + '" href="#servizi">Servizi</a></div>';
 }
 
 function vistaLicenze(anno, contatore) {
@@ -1153,7 +1238,7 @@ function vistaServizi(anno, mese, categoria) {
     var min = eff.length ? Math.min.apply(null, eff) : 0, max = eff.length ? Math.max.apply(null, eff) : 0;
     var tot = Object.keys(totali).reduce(function (a, k) { return a + totali[k]; }, 0);
     var media = eff.length ? eff.reduce(function (a, b) { return a + b; }, 0) / eff.length : 0;
-    var h = '<div class="intestazione"><h1>Servizi ' + (mese ? MESI[mese] + ' ' : 'anno ') + anno + '</h1><div class="naviga">'
+    var h = schedeLicenze('servizi') + '<div class="intestazione"><h1>Servizi ' + (mese ? MESI[mese] + ' ' : 'anno ') + anno + '</h1><div class="naviga">'
       + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, 0, categoria), 'Tutto l\'anno']].concat(MESI.slice(1).map(function (n, k) { return [vai(anno, k + 1, categoria), n]; })), vai(anno, mese, categoria)) + '</select>'
       + '<a class="bottone" href="' + vai(anno - 1, mese, categoria) + '">&larr; ' + (anno - 1) + '</a><a class="bottone" href="' + vai(anno + 1, mese, categoria) + '">' + (anno + 1) + ' &rarr;</a>'
       + '<select onchange="location.hash=this.value">' + opzioni([[vai(anno, mese, 'SER'), 'Servizi in sede (guardie, Udp, Gdg...)'], [vai(anno, mese, 'FUO'), 'Impieghi fuori sede'], [vai(anno, mese, 'ATT'), 'Attivita\' / visite'], [vai(anno, mese, 'ASS'), 'Assenze'], [vai(anno, mese, 'tutte'), 'Tutti i codici']], vai(anno, mese, categoria)) + '</select>'
@@ -1235,6 +1320,49 @@ var CONFIG_TAB = {
   Archivio: { titolo: 'Archivio anni' }
 };
 
+// ---- colori per famiglia: ogni categoria ha la sua tinta, i codici della stessa famiglia ne hanno sfumature diverse
+var TINTE = {
+  ASS: ['#d32f2f', '#f48fb1', '#8e1b3a', '#ff8a65', '#c2185b', '#ffcdd2', '#bf360c', '#f06292', '#6d1b2b', '#ef9a9a', '#e64a19', '#fce4ec'],
+  SER: ['#ffeb3b', '#ff9800', '#fff59d', '#ffb300', '#ffe0b2', '#f9a825', '#ffd54f', '#ef6c00', '#fff9c4', '#ffcc80'],
+  FUO: ['#2e7d32', '#a5d6a7', '#00897b', '#7cb342', '#1b5e20', '#80cbc4', '#558b2f', '#c5e1a5', '#004d40', '#66bb6a'],
+  ATT: ['#1565c0', '#90caf9', '#3949ab', '#4fc3f7', '#0d47a1', '#9fa8da', '#0288d1', '#bbdefb', '#283593', '#81d4fa'],
+  ALT: ['#eeeeee', '#9e9e9e', '#d1c4e9', '#b0bec5', '#ce93d8', '#e0e0e0', '#78909c', '#f5f5f5', '#b39ddb', '#cfd8dc']
+};
+function testoLeggibile(hex) {
+  var r = parseInt(hex.substr(1, 2), 16) / 255, g = parseInt(hex.substr(3, 2), 16) / 255, b = parseInt(hex.substr(5, 2), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? '#000000' : '#ffffff';
+}
+function coloriPerFamiglia() {
+  var out = {}, conta = {};
+  CFG.codici.slice().sort(function (a, b) { return (Number(a.ordine) || 999) - (Number(b.ordine) || 999) || a.codice.localeCompare(b.codice); })
+    .forEach(function (k) {
+      var fam = TINTE[k.categoria] ? k.categoria : 'ALT', i = conta[fam] = (conta[fam] || 0) + 1;
+      var sf = TINTE[fam][(i - 1) % TINTE[fam].length];
+      out[k.codice] = [sf, testoLeggibile(sf)];
+    });
+  return out;
+}
+function dialogoColoriFamiglia() {
+  var nuovi = coloriPerFamiglia(), per = {};
+  CFG.codici.forEach(function (k) { (per[TINTE[k.categoria] ? k.categoria : 'ALT'] = per[TINTE[k.categoria] ? k.categoria : 'ALT'] || []).push(k); });
+  var famiglie = Object.keys(TINTE).filter(function (f) { return per[f]; });
+  var chip = function (c, col) { return '<span class="etichetta" style="background:' + col[0] + ';color:' + col[1] + '">' + esc(c) + '</span>'; };
+  apriDialogo('<h2>🎨 Colori per famiglia</h2><p class="aiuto">Ogni famiglia di codici prende la sua tinta: assenze nei rossi, servizi nei gialli, fuori sede nei verdi, attivita\' nei blu, il resto nei grigi. '
+    + 'La famiglia e\' la <em>categoria</em> del codice. Togli la spunta alle famiglie di cui vuoi tenere i colori attuali. A sinistra i colori di adesso, a destra quelli nuovi. Dopo potrai comunque cambiare a mano il colore di ogni codice.</p>'
+    + famiglie.map(function (f) {
+      return '<h3><label class="check"><input type="checkbox" class="fam-scelta" value="' + f + '" checked> ' + esc(CATEGORIE[f] || f) + '</label></h3><table class="tabella">' + per[f].map(function (k) {
+        return '<tr><td>' + chip(k.codice, [k.colore_sfondo || '#ffffff', k.colore_testo || '#000000']) + '</td><td>→</td><td>' + chip(k.codice, nuovi[k.codice]) + '</td><td class="piccolo">' + esc(k.descrizione) + '</td></tr>';
+      }).join('') + '</table>';
+    }).join('')
+    + '<p><button class="primario" id="applica-colori">Applica i nuovi colori</button> <button type="button" onclick="chiudiDialogo()">Annulla</button></p>');
+  document.getElementById('applica-colori').onclick = function () {
+    var scelte = Array.prototype.map.call(document.querySelectorAll('.fam-scelta:checked'), function (x) { return x.value; }), da = {};
+    if (!scelte.length) { avviso('Scegli almeno una famiglia', true); return; }
+    CFG.codici.forEach(function (k) { if (scelte.indexOf(TINTE[k.categoria] ? k.categoria : 'ALT') >= 0) da[k.codice] = nuovi[k.codice]; });
+    api('codiciColori', { colori: da }).then(function (n) { chiudiDialogo(); avviso('Colori cambiati per ' + n + ' codici'); MEMORIA = {}; return ricaricaConfig(); }).then(function () { ricarica(); });
+  };
+}
+
 function vistaConfig(tab) {
   tab = CONFIG_TAB[tab] ? tab : 'Codici';
   if (tab === 'Archivio') return vistaArchivio();
@@ -1242,6 +1370,7 @@ function vistaConfig(tab) {
   var h = '<div class="schede">' + Object.keys(CONFIG_TAB).map(function (k) { return '<a class="' + (k === tab ? 'attiva' : '') + '" href="#config/' + k + '">' + CONFIG_TAB[k].titolo + '</a>'; }).join('') + '</div>'
     + '<div class="intestazione"><h1>' + def.titolo + '</h1><div class="naviga">'
     + (adm && tab !== 'Orario' && tab !== 'Archivio' ? bottoneSel('cfg', 'Elimina selezionati', 'eliminaConfigSel') + '<button class="bottone primario" onclick="dialogoConfig(' + J(tab) + ')">+ Aggiungi</button>' : '')
+    + (adm && tab === 'Codici' ? '<button class="bottone" onclick="dialogoColoriFamiglia()">🎨 Colori per famiglia</button>' : '')
     + (adm ? '<button class="bottone" onclick="backupOra()">Backup ora</button>' : '') + '</div></div><table class="tabella">';
   var mod = function (v) { return adm ? '<button class="link" onclick="dialogoConfig(' + J(tab) + ',' + J(v) + ')">modifica</button>' : ''; };
   var cs = function (v) { return adm ? '<td>' + sel('cfg', v) + '</td>' : ''; }, ct = adm ? '<th>' + selTutti('cfg') + '</th>' : '';

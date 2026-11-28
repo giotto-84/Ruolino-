@@ -675,6 +675,53 @@ function celleRipristina_(d, utente) {
   return celle.length;
 }
 
+/**
+ * Salvataggio raggruppato dell'inserimento rapido: i tocchi fatti in pochi istanti arrivano insieme.
+ * operazioni = [{militare_id, data, codice ('' = svuota la casella), localita, sostituisci}]
+ * Restituisce le caselle aggiornate (anche il giorno dopo, per gli smonti) e gli eventuali errori casella per casella.
+ */
+function celleSalva_(d, utente) {
+  var ops = d.operazioni || [];
+  if (!ops.length) return { celle: {}, errori: [] };
+  if (ops.length > 200) throw new Error('Troppe caselle in una volta');
+  var codici = mappa_(leggi_('Codici'), 'codice'), toccate = {}, errori = [], perde = false;
+  ops.forEach(function (o) {
+    var k = o.militare_id + '|' + o.data;
+    try {
+      if (!o.codice) {
+        cellaElimina_({ militare_id: o.militare_id, data: o.data });
+      } else {
+        cellaSalva_({ militare_id: o.militare_id, data: o.data, codice: o.codice, localita: o.localita || '', sostituisci: !!o.sostituisci }, utente);
+        if (codicePerdeForza_(o.codice)) perde = true;
+      }
+      toccate[k] = true;
+      toccate[o.militare_id + '|' + aggiungiGiorni_(o.data, 1)] = true; // smonto (messo o tolto)
+    } catch (e) {
+      errori.push({ k: k, errore: e && e.message ? e.message : String(e) });
+      toccate[k] = true;
+    }
+  });
+  var celle = {};
+  Object.keys(toccate).forEach(function (k) {
+    var p = k.split('|');
+    try { celle[k] = impieghiCella_(p[0], p[1]); } catch (e) { /* giorno archiviato o militare rimosso */ }
+  });
+  return { celle: celle, errori: errori, perdeForza: perde };
+}
+
+/** Colori per famiglia: colori = {codice: [sfondo, testo]} */
+function codiciColori_(d) {
+  var colori = d.colori || {}, n = 0, ok = /^#[0-9a-fA-F]{6}$/;
+  var righe = leggi_('Codici').map(function (c) {
+    var v = colori[c.codice];
+    if (v && ok.test(v[0]) && ok.test(v[1])) { c.colore_sfondo = v[0]; c.colore_testo = v[1]; n++; }
+    return c;
+  });
+  if (n) riscrivi_('Codici', righe);
+  registra_('Colori dei codici cambiati per famiglia (' + n + ' codici)');
+  return n;
+}
+
 function cellaElimina_(d) {
   verificaNonArchiviato_(d.data);
   var m = militareDa_(d.militare_id);
@@ -1189,6 +1236,8 @@ var AZIONI = {
   cella: { ruolo: 'Consultazione', fn: function (d) { return impieghiCella_(d.militare_id, d.data); } },
   cellaSalva: { ruolo: 'Operatore', fn: cellaSalva_ },
   cellaElimina: { ruolo: 'Operatore', fn: cellaElimina_ },
+  celleSalva: { ruolo: 'Operatore', fn: celleSalva_ },
+  codiciColori: { ruolo: 'Amministratore', fn: codiciColori_ },
   celleRipristina: { ruolo: 'Operatore', fn: celleRipristina_ },
   periodo: { ruolo: 'Operatore', fn: periodo_ },
   periodoElimina: { ruolo: 'Operatore', fn: periodoElimina_ },
